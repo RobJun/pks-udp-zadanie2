@@ -1,28 +1,30 @@
 import socket
+import sys
+import threading
+from src.connection import Connection
 
+from src.threads import serverThread
 
-def server():
-    port = 33821
-    host =  socket.gethostname()
-    print("ip addresa: ", host)
+def server(port):
+    hostname = socket.gethostname()
+    host =  socket.gethostbyname(hostname) 
+    print("Hostname: ",hostname)
+    print("IP addresa: ", host)
     print("port: ",port)
 
     s = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    try:
+        s.bind((host,port))
+    except Exception:
+        print("Couldnt create socket")
+        sys.exit(1)
+    con = Connection(s)
+    threadCondition = threading.Condition() 
+    server = serverThread(threadCondition,con)
 
-    s.bind((host,port))
-
-
+    server.start()
 
     while True:
-        d = s.recvfrom(1024)
-        print(d)
-
-        if not d[0]:
-            break
-    
-        reply = "OK..."
-
-        s.sendto(reply,d[1])
-        print(d[1][0],": ", d[0])
-
+        input("send ping")
+        con.send("fromServer".encode())
     s.close()
