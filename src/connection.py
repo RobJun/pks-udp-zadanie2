@@ -74,6 +74,7 @@ class Connection:
                  self.rstTime()
             msg = encapsulateData(type,flags,seqNum,0,data)
             self.packetsToSend.append((seqNum,msg))
+            print(self.packetsToSend)
     
     def ack(self, seqNum):
         with self.windowCondtion:
@@ -81,6 +82,7 @@ class Connection:
                 self.packetsToSend = self.packetsToSend[1:]
                 self.windowSize -= 1
                 self.startTime = time.time()
+                print(self.packetsToSend)
 
     def resendWindow(self):
         resend = False

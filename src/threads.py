@@ -26,16 +26,11 @@ class serverThread(threading.Thread):
                     #print(awaitedWindow == int.from_bytes(msg["seqNum"],"big"))
                     if int.from_bytes(msg["seqNum"],"big") == awaitedWindow:
                         awaitedWindow += 1
-                        print(d[0])
-                        print(int.from_bytes(msg["seqNum"],"big"))
-                        print(encapsulateData(0x00,ACK,0,int.from_bytes(msg["seqNum"],"big"),b""))
                         self.con.socket.sendto(encapsulateData(0x00,ACK,0,int.from_bytes(msg["seqNum"],"big"),b""),addr)
                         if msg["type"] == TEXT:
                             buildText += msg["data"].decode()
-                            print("semi- -- ", buildText)
-                            print(buildText)
                             if msg["flags"] == FIN:
-                                print("final -- ",buildText)
+                                print(buildText)
                                 buildText = ""
                         elif msg["type"] == 0x02:
                             if msg["flags"] == 0x01:
@@ -86,7 +81,6 @@ class clientListenThread(threading.Thread):
             if self.con.getRunning():
                 recv = self.con.recieve()
                 if recv != None:
-                    print("recieved frame :",recv[0])
                     msg, addr = recv
                     msg = parseData(msg)
                     self.con.ack(int.from_bytes(msg["ackNum"],"big"))

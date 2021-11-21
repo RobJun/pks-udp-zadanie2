@@ -27,7 +27,7 @@ def server(port,host,fragSize):
     except Exception:
         print("Couldnt create socket")
         sys.exit(1)
-        
+
     connection = Connection(s)
     connection.connected = True
     serverListen = serverThread(connection)
@@ -82,14 +82,14 @@ def client(port, hostIP,fragSize):
             path = ""
             while path == "":
                 path = input("zadajte cestu k suború: ")
-            f = open(path,"rb")
-
-            frags = fragment(f.read(),fragSize)
+            f = open(path,"r")
+            data= f.read()
+            frags,num = fragment(data,fragSize)
             if not connection.getConnected():
                 connection.send(CONTROL,SYN,None,None,b"")
-            connection.send(FILE,SYN,None,None,)
+            connection.send(FILE,SYN,None,None,bytes(pathlib.Path(path).name,"ascii"))
             for frag in frags:
-                connection.send(FILE,ACK,None,None,frag)
+                connection.send(FILE,ACK,None,None,frag.encode("ascii"))
             connection.send(FILE,FIN,None,None,b"")
 
 
@@ -108,7 +108,7 @@ if __name__ == '__main__':
             #IP = input("zadajte ip servera")
             #port = input("zadajte port servera")
             #downloadTo = ("zadajte miesto kam sa budu ukladat subory")
-            server(PORT,IP,3)
+            server(PORT,IP,500)
         elif mode == "2":
             #port = input("zadajte port servera")
-            client(PORT,IP,3)
+            client(PORT,IP,500)
