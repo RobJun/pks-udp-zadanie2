@@ -1,8 +1,9 @@
 import socket
 import threading
 import time
+import random
 
-from src.constants import checkCRC16, encapsulateData
+from src.constants import MAX_SEQ, checkCRC16, encapsulateData
 
 
 class Connection:
@@ -12,6 +13,15 @@ class Connection:
         self.addr = 0
         self.connected = False
 
+        self.initPacket = False
+        self.initTries = 0
+        self.maxTries = 3
+
+
+        self.keepAlive = False
+        self.keepAliveTries = 0
+        self.keepAliveMaxTries = 3
+
 
         self.connectedCondition = threading.RLock()
         self.runningCondition = threading.RLock()
@@ -19,11 +29,27 @@ class Connection:
         self.windowCondtion = threading.RLock()
         
         self.packetsToSend = []
-        self.maxWindowSize = 5
+        self.maxWindowSize = 1
         self.windowSize = 1
-        self.timeoutTime = 10 #seconds
+        self.timeoutTime = 5 #seconds
         self.startTime = 0
         self.fsize = 1024
+
+        self.fragCount = 0;
+        self.currentFrag = 0;
+        self.simulateMistake = True
+
+        self.maxTimeOuts = 7
+        self.resendTries = 0
+
+        self.lastSeq = -1
+
+        self.canSwap = False
+        self.swap_available = threading.Event()
+
+        self.lastSendFrame = None
+
+        self.sending = 0 # 0 - undetermined; 1 - listening; 2 - sending
 
     def checkTime(self):
         with self.timeCondition:
@@ -43,6 +69,14 @@ class Connection:
         with self.windowCondtion:
             return self.windowSize
 
+    def getCurrentFrags(self):
+        with self.windowCondtion:
+            return self.currentFrag
+
+    def transferDone(self):
+        with self.windowCondtion:
+            return len(self.packetsToSend) == 0
+
 
     def getRunning(self):
         with self.runningCondition:
@@ -60,48 +94,97 @@ class Connection:
         try:
             msg,addr = self.socket.recvfrom(self.fsize)
             if checkCRC16(msg):
-                return msg,addr
+                return True,msg,addr
+            else:
+                return False,msg,addr
         except Exception:
             return  None
         return None
 
     def send(self,type : int,flags : int, seqNum : int ,ackNum : int,data : bytes):
         with self.windowCondtion:
-            if len(self.packetsToSend) != 0:
-                seqNum = (self.packetsToSend[-1][0] + 1) % self.maxWindowSize
-            else:
-                 seqNum = 0
-                 self.rstTime()
+            seqNum = self.lastSeq = (self.lastSeq+1) % MAX_SEQ
             msg = encapsulateData(type,flags,seqNum,0,data)
             self.packetsToSend.append((seqNum,msg))
-            print(self.packetsToSend)
+            self.fragCount +=1
+            if len(self.packetsToSend) == 0:
+                self.rstTime()
+            #print(self.packetsToSend)
     
     def ack(self, seqNum):
         with self.windowCondtion:
-            if seqNum == self.packetsToSend[0][0]:
-                self.packetsToSend = self.packetsToSend[1:]
-                self.windowSize -= 1
-                self.startTime = time.time()
-                print(self.packetsToSend)
+            result = False
 
-    def resendWindow(self):
+            if len(self.packetsToSend) != 0 and seqNum == self.packetsToSend[0][0]:
+                if self.initPacket:
+                    self.initPacket = False
+                    self.maxWindowSize = 5
+                    self.tries = 0
+                    self.resendTries = 0
+                    self.changeState(0,True)
+                self.packetsToSend = self.packetsToSend[1:]
+                result = True
+                self.windowSize -= 1
+                self.currentFrag +=1
+                self.startTime = time.time()
+                #print(self.packetsToSend)
+            return result;
+
+    def resendWindow(self, timeout):
         resend = False
         with self.windowCondtion:
+            if timeout and self.initPacket:
+                self.initTries+=1
+                if self.initTries == self.maxTries + 1:
+                    print("Couldn't connect to server")
+                    self.flushConnection()
+                    return resend;
+            elif timeout and self.resendTries <= self.maxTimeOuts:
+                self.resendTries+=1
+                if self.resendTries == self.maxTries + 1:
+                    print("Server not responding")
+                    self.flushConnection()
+                    return resend;
             if len(self.packetsToSend) != 0:
                 for i in range(self.windowSize-1):
-                    #print(self.packetsToSend[i][1])
-                    self.socket.sendto(self.packetsToSend[i][1],self.addr)
+                    frame = self.packetsToSend[i][1];
+                    if self.simulateMistake and random.randint(0,50) == 0:
+                        index = random.randint(0,len(frame)-1)
+                        frame = frame[:index] + int.to_bytes(random.randint(0,255),1,"big") + frame[index+1:]
+                    self.socket.sendto(frame,self.addr)
+                    self.lastSendFrame = frame
                     resend = True
         return resend
 
     def sendNext(self):
         sent = False
         with self.windowCondtion:
-            if len(self.packetsToSend) >= self.windowSize:
+            if self.addr == 0:
+                print("NO connection to send")
+                self.flushConnection()
+                return 
+            if self.windowSize != self.maxWindowSize+1 and len(self.packetsToSend) >= self.windowSize:
                 frame = self.packetsToSend[self.windowSize-1][1];
-                #print(frame, "\nink: ",self.windowSize)
+                if self.simulateMistake and random.randint(0,50) == 0:
+                    index = random.randint(8,len(frame)-1)
+                    frame = frame[:index] + int.to_bytes(random.randint(0,255),1,"big") + frame[index+1:]
                 self.socket.sendto(frame,self.addr)
+                self.lastSendFrame = frame
                 self.windowSize +=1
                 sent = True
-
         return sent;
+
+    def flushConnection(self):
+        with self.windowCondtion:
+                self.packetsToSend = []
+                self.changeState(0,False)
+                self.initTries = 0
+                self.resendTries = 0
+                self.lastSeq = -1
+                self.fragCount = 0
+                self.lastSendFrame = None
+
+    def canSend(self):
+        return self.sending == 2
+
+
