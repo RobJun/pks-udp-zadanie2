@@ -7,7 +7,7 @@ from src.constants import MAX_SEQ, checkCRC16, encapsulateData
 
 
 class Connection:
-    def __init__(self,socket : socket.socket):
+    def __init__(self,socket : socket.socket, server : bool = False):
         self.socket = socket
         self.running = True 
         self.addr = 0
@@ -21,12 +21,16 @@ class Connection:
         self.keepAlive = False
         self.keepAliveTries = 0
         self.keepAliveMaxTries = 3
+        self.keepAliveStartTime = 15 #seconds
+        self.server = server
+        self.keepAliveTime = 0;
 
 
         self.connectedCondition = threading.RLock()
         self.runningCondition = threading.RLock()
         self.timeCondition = threading.RLock()
-        self.windowCondtion = threading.RLock()
+        self.windowCondtion = threading.RLock()      
+        self.keepAliveTimeLock = threading.RLock()
         
         self.packetsToSend = []
         self.maxWindowSize = 1
@@ -42,10 +46,9 @@ class Connection:
         self.maxTimeOuts = 7
         self.resendTries = 0
 
-        self.lastSeq = -1
+        self.awaitedWindow = 0
 
-        self.canSwap = False
-        self.swap_available = threading.Event()
+        self.lastSeq = -1
 
         self.lastSendFrame = None
 
@@ -54,12 +57,20 @@ class Connection:
     def checkTime(self):
         with self.timeCondition:
             t = time.time() - self.startTime
-            result = t >= self.timeoutTime 
-            return result
+            return t >= self.timeoutTime
 
     def rstTime(self):
         with self.timeCondition:
             self.startTime = time.time()
+
+    def rstTimeAliveClock(self):
+        with self.keepAliveTimeLock:
+            self.keepAliveStartTime = time.time()
+    
+    def checkKeepAliveTimer(self):
+        with self.keepAliveTimeLock:
+            return time.time() - self.keepAliveStartTime >= self.keepAliveTime
+
 
     def getConnected(self):
         with self.connectedCondition:
@@ -141,7 +152,7 @@ class Connection:
                     return resend;
             elif timeout and self.resendTries <= self.maxTimeOuts:
                 self.resendTries+=1
-                if self.resendTries == self.maxTries + 1:
+                if self.resendTries == self.maxTimeOuts + 1:
                     print("Server not responding")
                     self.flushConnection()
                     return resend;

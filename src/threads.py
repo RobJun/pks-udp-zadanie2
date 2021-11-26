@@ -6,29 +6,14 @@ from src.connection import Connection
 from src.progressBar import printProgressBar
 
 
-class keepAliveThread(threading.Thread):
-    def __init__(self,keepAliveEvent : threading.Event):
-        self.time = time.time()
-        self.stop = False
-        self.condition = threading.RLock()
-        self.timeout = False
-        self.event = keepAliveEvent
-    
-    def run(self):
-        while not self.stop:
-            with self.condition:
-                if time.time() - self.time >= 10:
-                    self.timeout = True
-                    self.event.set()
-
-
 class clientSendThread(threading.Thread):
     def __init__(self,connection : Connection):
         threading.Thread.__init__(self)
         self.con = connection
+        self.keepAliveTimeStart = time.time()
     
     def run(self):
-        print("---- SENDING THREAD START----")
+        print("---- SENDING THREAD START ----")
         while True:
             if self.con.getRunning():
                 if self.con.canSend():
@@ -39,10 +24,18 @@ class clientSendThread(threading.Thread):
                             if self.con.resendWindow(True):
                                 print("-> timeout -- resending window")
                                 self.con.rstTime()
-                    else:
-                        pass
+                    elif not self.con.server and self.con.keepAlive:
+                        if self.con.checkKeepAliveTimer():
+                            self.con.send(CONTROL,KEEP,None,None,b'')
+                            self.con.rstTimeAliveClock()
+                        print("sending keep alive")
+                    elif self.con.server and self.con.keepAlive and self.con.checkKeepAliveTimer():
+                        self.con.addr = 0
+                        self.con.awaitedWindow = 0
+                        self.con.keepAlive = False;
+                        self.con.flushConnection()
             else:
-                print("---- SENDING THREAD END----")
+                print("---- SENDING THREAD END ----")
                 break
 
 class clientListenThread(threading.Thread):
@@ -52,8 +45,7 @@ class clientListenThread(threading.Thread):
         self.downloadDirectory = downloadDirectory
 
     def run(self):
-        print("---- LISTEN THREAD START----")
-        awaitedWindow = 0
+        print("---- LISTEN THREAD START ----")
         fileName =""
         buildFile = b""
         fragCount = 0;
@@ -90,7 +82,7 @@ class clientListenThread(threading.Thread):
                             else:
                                 seq = int.from_bytes(msg["seqNum"],"big")
                                 fragCount = int.from_bytes(msg["seqNum"],"big")
-                                if seq < awaitedWindow:
+                                if seq < self.con.awaitedWindow:
                                     if msg["type"] == CONTROL:
                                         if ACK+msg["flags"] > 0x30:
                                             print(msg)
@@ -101,8 +93,8 @@ class clientListenThread(threading.Thread):
                                         reply = encapsulateData(CONTROL,ACK,int.from_bytes(msg["seqNum"],"big"),0,b"")
                                         self.con.lastSendFrame = reply
                                         self.con.socket.sendto(reply,addr)
-                                elif seq == awaitedWindow:
-                                    awaitedWindow += 1
+                                elif seq == self.con.awaitedWindow:
+                                    self.con.awaitedWindow += 1
                                     if msg["type"] == CONTROL:
                                         if ACK+msg["flags"] > 0x30:
                                             print(msg)
@@ -116,7 +108,7 @@ class clientListenThread(threading.Thread):
                                             self.con.addr = addr
                                             print("Connection started with {}".format(addr[0]))
                                         elif msg["flags"] == FIN:
-                                            awaitedWindow = 0
+                                            self.con.awaitedWindow = 0
                                             self.con.addr = 0
                                             print("Connection terminated with {}".format(addr[0]))
                                         elif msg["flags"] == KEEP:
@@ -150,13 +142,13 @@ class clientListenThread(threading.Thread):
                                                     print("failed to write")
                                             else:
                                                 poradie = seq - transferInit
-                                                print("bol prijaty fragment {}. z {} -- prijaty bez chyby".format(poradie,), end="\r")
+                                                print("bol prijaty fragment {}. z {} -- prijaty bez chyby".format(poradie,fragsNums), end="\r")
                                                 buildFile += msg["data"]
                                                 fragCount+=1
                                         #self.con.socket.sendto(encapsulateData(0x00,ACK+msg["flags"],int.from_bytes(msg["seqNum"],"big"),0,b""),addr)
-                                    if awaitedWindow == MAX_SEQ:
-                                        awaitedWindow = 0
+                                    if self.con.awaitedWindow == MAX_SEQ:
+                                        self.con.awaitedWindow = 0
 
             else:
-                print("---- CLIENT LISTEN THREAD END----")
+                print("---- LISTEN THREAD END ----")
                 break

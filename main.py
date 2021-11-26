@@ -19,19 +19,24 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
         if option == "0":
             if connection.transferDone():
                 connection.changeState(1,False)
-                connection.send(CONTROL,FIN,None,None,b"")
+                #connection.send(CONTROL,FIN,None,None,b"")
+                connection.socket.close()
                 listenThread.join()
                 sendThread.join()
-                connection.socket.close()
                 return False
             else:
                 print("packets are still transmitting")
         elif option == "1": # string
-            fragSize = ""
+            fragSize = 0
             msg = ""
             if connection.sending != 1:
+                while fragSize == 0:
+                    fragSize = input("zadajte velkost fragemntu <1-X>: ")
+                    try:
+                        fragSize = int(fragSize)
+                    except Exception:
+                        fragSize = 0
                 while msg == "":
-                    fragSize = int(input("zadajte velkost fragemntu <1-X>: "))
                     msg = input("zadajte spravu: ")
 
                 frags,num = fragment(bytes(msg, "ascii"),fragSize)
@@ -52,10 +57,16 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
             pass
         elif option == "2": #subor
             if connection.sending != 1:
-                fragSize = ""
+                fragSize = 0
                 path = ""
+                while fragSize == 0:
+                    fragSize = input("zadajte velkost fragemntu <1-X>: ")
+                    try:
+                        fragSize = int(fragSize)
+                    except Exception:
+                        fragSize = 0
+
                 while path == "":
-                    fragSize = int(input("zadajte velkost fragemntu <1-X>: "))
                     path = input("zadajte cestu k suború: ")
                 try:
                     f = open(path,"rb")
