@@ -31,14 +31,14 @@ def encapsulateData(typ : int,flags : int, seqNum : int ,ackNum : int,data : byt
     header += int.to_bytes(flags,1,"big")
     header += int.to_bytes(len(data),2,"big")
     header += int.to_bytes(seqNum,2,"big")
-    header += int.to_bytes(ackNum,2,"big")
+    header += int.to_bytes(ackNum,3,"big")
     
     send = header + data
     return send + int.to_bytes(calculateCRC16(send),2,"big");
 
 
 def parseData(msg : bytes):
-    return {"type" : msg[0], "flags" : msg[1],"size" : msg[2:4], "seqNum" : msg[4:6], "fragCount" : msg[6:8], "crc" : msg[-2:], "data" : msg[8:-2]}
+    return {"type" : msg[0], "flags" : msg[1],"size" : msg[2:4], "seqNum" : msg[4:6], "fragCount" : msg[6:9], "crc" : msg[-2:], "data" : msg[9:-2]}
 
 def calculateCRC16(data : bytes):
     poly = 0x11021
@@ -75,5 +75,12 @@ def checkCRC16(data: bytes):
 
 
     return (crc & 0xffff == 0)
+
+
+def safePrint(row):
+    print('\n')
+    print(row)
+
+
 
  

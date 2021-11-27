@@ -12,6 +12,7 @@ from src.constants import ACK, CONTROL, FILE, SYN, TEXT,FIN, SWAP, fragment
 PORT = 33821
 IP = "192.168.1.2"
 
+#Z:\5_semester\7_seminar_STU_-_priklady.pdf
 
 def operations(connection : Connection, listenThread : clientListenThread, sendThread : clientSendThread):
     while True:
@@ -30,70 +31,68 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
             fragSize = 0
             msg = ""
             if connection.sending != 1:
-                while fragSize == 0:
-                    fragSize = input("zadajte velkost fragemntu <1-X>: ")
-                    try:
-                        fragSize = int(fragSize)
-                    except Exception:
-                        fragSize = 0
-                while msg == "":
-                    msg = input("zadajte spravu: ")
-
-                frags,num = fragment(bytes(msg, "ascii"),fragSize)
-                #flag = ACK if num == 1 else ACK+FRAG
-                flag = 0x00
                 with connection.windowCondtion:
+                    while fragSize == 0:
+                        fragSize = input("zadajte velkost fragemntu <1-X>: ")
+                        try:
+                            fragSize = int(fragSize)
+                        except Exception:
+                            fragSize = 0
+                    while msg == "":
+                        msg = input("zadajte spravu: ")
+
+                    frags,num = fragment(bytes(msg, "ascii"),fragSize)
+                    #flag = ACK if num == 1 else ACK+FRAG
+                    flag = 0x00
                     connection.sending = 2
                     connection.fragCount = num;
                     if not connection.getConnected():
-                        connection.send(CONTROL,SYN,None,None,b"")
+                        connection.send(CONTROL,SYN,None,0,b"")
                         connection.initPacket = True
-                    for frag in frags:
-                        connection.send(TEXT,flag,None,None,frag)
-                    connection.send(TEXT,FIN,None,None,b"")
+                    connection.sendMultiple(TEXT,0x00,0,frags,True)
                     connection.rstTime()
             else:
                 print("In listening mode")
             pass
         elif option == "2": #subor
             if connection.sending != 1:
-                fragSize = 0
-                path = ""
-                while fragSize == 0:
-                    fragSize = input("zadajte velkost fragemntu <1-X>: ")
-                    try:
-                        fragSize = int(fragSize)
-                    except Exception:
-                        fragSize = 0
+                with connection.windowCondtion:
+                    fragSize = 0
+                    path = ""
+                    while fragSize == 0:
+                        fragSize = input("zadajte velkost fragemntu <1-X>: ")
+                        try:
+                            fragSize = int(fragSize)
+                        except Exception:
+                            fragSize = 0
 
-                while path == "":
-                    path = input("zadajte cestu k suború: ")
-                try:
-                    f = open(path,"rb")
-                    data= f.read()
-                    frags,num = fragment(data,fragSize)
-                    print("súbor {} bol fragmentovany na {} kusov".format(path,num))
-                    with connection.windowCondtion:
+                    while path == "":
+                        path = input("zadajte cestu k suború: ")
+                    try:
+                        f = open(path,"rb")
+                        data= f.read()
+                        frags,num = fragment(data,fragSize)
+                        fileName = pathlib.Path(path).name
+                        fragName,numName = fragment(fileName.encode("ascii"),fragSize)
+                        print("nazov súboru {} bol fragmentovany na {} kusov".format(path,numName))
+                        print("súbor {} bol fragmentovany na {} kusov".format(path,num))
                         connection.sending = 2
                         if not connection.getConnected():
-                            connection.send(CONTROL,SYN,None,None,b"")
+                            connection.send(CONTROL,SYN,None,0,b"")
                             connection.initPacket = True
-                        connection.send(FILE,SYN,None,None,bytes(pathlib.Path(path).name,"ascii"))
-                        #flag = ACK if num == 1 else ACK+FRAG
-                        flag = 0x00
-                        for frag in frags:
-                            connection.send(FILE,flag,None,None,frag)
-                        connection.send(FILE,FIN,None,None,b"")
+                        connection.sendMultiple(FILE,SYN,numName,fragName,True)
+                        connection.sendMultiple(FILE,0x00,num,frags)
+                        connection.send(FILE,FIN,None,num,b"")
                         print("ready to send")
                         printProgressBar(0,connection.fragCount,"Frag sent","Complete")
                         connection.rstTime()
-                except Exception:
-                    print("Invalid File")
+                    except Exception:
+                        print("Invalid File")
             else:
                 print("In listening mode")
         elif option == "3":
             if connection.sending != 1:
-                connection.send(CONTROL,SWAP,None,None,b'');
+                connection.send(CONTROL,SWAP,None,0,b'');
                 connection.rstTime()
             else:
                 print("In listening mode")
@@ -111,7 +110,7 @@ def server(port,host):
         print("Couldnt create socket")
         sys.exit(1)
 
-    connection = Connection(s)
+    connection = Connection(s,True)
     connection.connected = True
     connection.sending = 1;
     serverListen = clientListenThread(connection)

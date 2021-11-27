@@ -1,9 +1,10 @@
+from os import remove
 import socket
 import threading
 import time
 import random
 
-from src.constants import MAX_SEQ, checkCRC16, encapsulateData
+from src.constants import MAX_SEQ, checkCRC16, encapsulateData,FIN
 
 
 class Connection:
@@ -19,11 +20,12 @@ class Connection:
 
 
         self.keepAlive = False
+        self.keepAliveFirstFrame = True
         self.keepAliveTries = 0
         self.keepAliveMaxTries = 3
         self.keepAliveStartTime = 15 #seconds
         self.server = server
-        self.keepAliveTime = 0;
+        self.keepAliveTime = 15;
 
 
         self.connectedCondition = threading.RLock()
@@ -54,6 +56,22 @@ class Connection:
 
         self.sending = 0 # 0 - undetermined; 1 - listening; 2 - sending
 
+
+        self.packetsGroups = []
+        self.packeTGroupStart = False
+
+
+    def enableKeepAlive(self):
+        with self.keepAliveTimeLock:
+            self.keepAlive = True
+            self.keepAliveFirstFrame = True
+            self.rstTimeAliveClock()
+
+    def disableKeepAlive(self):
+        with self.keepAliveTimeLock:
+            self.keepAlive = False
+            self.keepAliveFirstFrame = True
+
     def checkTime(self):
         with self.timeCondition:
             t = time.time() - self.startTime
@@ -67,9 +85,9 @@ class Connection:
         with self.keepAliveTimeLock:
             self.keepAliveStartTime = time.time()
     
-    def checkKeepAliveTimer(self):
+    def checkKeepAliveTimer(self,t : int):
         with self.keepAliveTimeLock:
-            return time.time() - self.keepAliveStartTime >= self.keepAliveTime
+            return (time.time() - self.keepAliveStartTime) >= t
 
 
     def getConnected(self):
@@ -112,15 +130,36 @@ class Connection:
             return  None
         return None
 
+    def sendMultiple(self,typ : int, flags : int, ackNum : int, fragments, lastisFin : bool = False):
+        count =0
+        if not lastisFin:
+            for frag in fragments:
+                msg = self.send(typ,flags,None,ackNum,frag)
+                if count == 0:
+                    startMsg = msg
+                count+=1
+        else:
+            for frag in fragments[:-1]:
+                msg = self.send(typ,flags,None,ackNum,frag)
+                if count == 0:
+                    startMsg = msg
+                count+=1
+            msg= self.send(typ,flags | FIN,None,ackNum,fragments[-1])
+            if count == 0:
+                    startMsg = msg
+            count+=1
+        self.packetsGroups.append([0,count,startMsg])
+
     def send(self,type : int,flags : int, seqNum : int ,ackNum : int,data : bytes):
         with self.windowCondtion:
             seqNum = self.lastSeq = (self.lastSeq+1) % MAX_SEQ
-            msg = encapsulateData(type,flags,seqNum,0,data)
+            msg = encapsulateData(type,flags,seqNum,ackNum,data)
             self.packetsToSend.append((seqNum,msg))
             self.fragCount +=1
             if len(self.packetsToSend) == 0:
                 self.rstTime()
             #print(self.packetsToSend)
+            return msg
     
     def ack(self, seqNum):
         with self.windowCondtion:
@@ -133,13 +172,15 @@ class Connection:
                     self.tries = 0
                     self.resendTries = 0
                     self.changeState(0,True)
-                self.packetsToSend = self.packetsToSend[1:]
+                
+                removed = self.packetsToSend.pop(0)
                 result = True
                 self.windowSize -= 1
                 self.currentFrag +=1
                 self.startTime = time.time()
                 #print(self.packetsToSend)
-            return result;
+                return result,removed
+            return result, None;
 
     def resendWindow(self, timeout):
         resend = False
@@ -197,5 +238,37 @@ class Connection:
 
     def canSend(self):
         return self.sending == 2
+
+
+    def lengthOfGroup(self):
+        with self.windowCondtion:
+            return self.packetsGroups[0][1]
+
+    def moveToNextPacketGroup(self):
+        with self.windowCondtion:
+            if self.packetsGroups[0][0] == self.packetsGroups[0][1]:
+                self.packeTGroupStart = False
+                self.packetsGroups.pop(0)
+    def getCountedGroups(self):
+        with self.windowCondtion:
+            return self.packetsGroups[0][0]
+
+    def enablePacketGroup(self,data):
+        with self.windowCondtion:
+            if not self.packeTGroupStart and len(self.packetsGroups) != 0:
+                if data ==  self.packetsGroups[0][2]:
+                    self.packeTGroupStart = True;
+                    return True;
+                else:
+                    return False;
+            else:
+                if len(self.packetsGroups) == 0:
+                    return False
+                return True
+
+    def incrementGroup(self):
+        with self.windowCondtion:
+             self.packetsGroups[0][0]+=1
+
 
 
