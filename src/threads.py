@@ -25,7 +25,7 @@ class clientSendThread(threading.Thread):
                                 safePrint("-> timeout -- resending window")
                                 self.con.rstTime()
                 if not self.con.server and self.con.keepAlive:
-                    if (self.con.checkKeepAliveTimer(10) or self.con.keepAliveFirstFrame) and self.con.transferDone():
+                    if (self.con.checkKeepAliveTimer(15) or self.con.keepAliveFirstFrame) and self.con.transferDone():
                         self.con.send(CONTROL,KEEP,None,0,b'')
                         self.con.rstTime()
                         self.con.rstTimeAliveClock()

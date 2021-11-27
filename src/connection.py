@@ -185,7 +185,13 @@ class Connection:
     def resendWindow(self, timeout):
         resend = False
         with self.windowCondtion:
-            if timeout and self.initPacket:
+            if timeout and self.keepAlive:
+                self.keepAliveTries +=1
+                if self.keepAliveTries == self.keepAliveMaxTries + 1:
+                    print("kept alive -- no response")
+                    self.flushConnection()
+                    return resend;
+            elif timeout and self.initPacket:
                 self.initTries+=1
                 if self.initTries == self.maxTries + 1:
                     print("Couldn't connect to server")
@@ -232,9 +238,11 @@ class Connection:
                 self.changeState(0,False)
                 self.initTries = 0
                 self.resendTries = 0
+                self.keepAliveTries = 0
                 self.lastSeq = -1
                 self.fragCount = 0
                 self.lastSendFrame = None
+                self.disableKeepAlive()
 
     def canSend(self):
         return self.sending == 2
