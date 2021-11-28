@@ -1,3 +1,4 @@
+
 import threading
 import time
 from src.constants import ACK, CONTROL, FILE, KEEP, RES, TEXT,FIN,SYN,MAX_SEQ,SWAP, encapsulateData, parseData,safePrint
@@ -16,14 +17,6 @@ class clientSendThread(threading.Thread):
         print("---- SENDING THREAD START ----")
         while True:
             if self.con.getRunning():
-                if self.con.canSend():
-                    if not self.con.transferDone():
-                        self.con.sendNext()
-                        #print("sending {} frame".format(self.con.getCurrentWindowSize()-1))
-                        if self.con.checkTime():
-                            if self.con.resendWindow(True):
-                                safePrint("-> timeout -- resending window")
-                                self.con.rstTime()
                 if not self.con.server and self.con.keepAlive:
                     if (self.con.checkKeepAliveTimer(15) or self.con.keepAliveFirstFrame) and self.con.transferDone():
                         self.con.send(CONTROL,KEEP,None,0,b'')
@@ -37,12 +30,21 @@ class clientSendThread(threading.Thread):
                     self.con.keepAlive = False;
                     self.con.flushConnection()
                     safePrint("server didnt recieve keep alive in time -- ending connection")
+
+                if self.con.canSend() or self.con.keepAlive:
+                    if not self.con.transferDone():
+                        self.con.sendNext()
+                        #print("sending {} frame".format(self.con.getCurrentWindowSize()-1))
+                        if self.con.checkTime():
+                            if self.con.resendWindow(True):
+                                safePrint("-> timeout -- resending window")
+                                self.con.rstTime()
             else:
                 print("---- SENDING THREAD END ----")
                 break
 
 class clientListenThread(threading.Thread):
-    def __init__(self,connection : Connection, downloadDirectory = "./"):
+    def __init__(self,connection : Connection, downloadDirectory = "./Downloads/"):
         threading.Thread.__init__(self)
         self.con = connection
         self.downloadDirectory = downloadDirectory
@@ -62,7 +64,7 @@ class clientListenThread(threading.Thread):
                 if recv != None:
                     correct,msg, addr = recv
                     msg = parseData(msg)
-                    if self.con.sending == 2 and msg["flags"] & ACK and correct:
+                    if (self.con.sending == 2 and msg["flags"] & ACK and correct) or (not self.con.server and self.con.keepAlive and msg["flags"] & KEEP):
                         if msg["flags"] == ACK | RES:
                             
                             safePrint("-> NACK recieved -- resending window\n")
@@ -71,19 +73,24 @@ class clientListenThread(threading.Thread):
                         else:
                             corr, frame =  self.con.ack(int.from_bytes(msg["seqNum"],"big"))
                             if corr:
+                                self.con.rstTimeAliveClock()
                                 if self.con.enablePacketGroup(frame[1]):
                                     print("\r",end="")
                                     printProgressBar(self.con.getCountedGroups()+1,self.con.lengthOfGroup() , prefix = 'Frag sent:', suffix = 'Complete')
                                     self.con.incrementGroup()
                                     self.con.moveToNextPacketGroup()
                                 if msg["type"] == CONTROL and  msg["flags"] == KEEP | ACK:
-                                    safePrint("server keep alive accepted")
+                                    safePrint("<- server keep alive accepted")
                                     self.con.rstTimeAliveClock()
                                 elif msg["type"] == CONTROL and msg["flags"] == SWAP | ACK:
-                                    safePrint("other side accepted swap")
+                                    safePrint("<- other side accepted swap")
                                     self.con.sending = 1
-                                if self.con.transferDone() and not self.con.keepAlive:
-                                    self.con.enableKeepAlive()
+                                    self.con.awaitedWindow = 0
+                                    #self.con.disableKeepAlive()
+                                    self.con.flushConnection(False)
+                                elif self.con.transferDone() and not self.con.keepAlive:
+                                    #self.con.enableKeepAlive()
+                                    pass
                     else:
                         if addr == self.con.addr or (self.con.addr == 0 and msg["type"] == CONTROL and msg["flags"] == SYN):
                             if not correct:
@@ -94,34 +101,47 @@ class clientListenThread(threading.Thread):
                             else:
                                 seq = int.from_bytes(msg["seqNum"],"big")
                                 fragCount = int.from_bytes(msg["seqNum"],"big")
-                                if seq < self.con.awaitedWindow:
+                                print("bol prijaty ramec {} -- {} ({})".format(msg["flags"],seq,self.con.awaitedWindow))
+                                if seq < self.con.awaitedWindow or ( self.con.awaitedWindow < self.con.maxWindowSize and seq > MAX_SEQ - (self.con.maxWindowSize - self.con.awaitedWindow)):
                                     if msg["type"] == CONTROL:
-                                        if ACK+msg["flags"] > 0x30:
-                                            safePrint(msg)
                                         reply = encapsulateData(CONTROL,ACK | msg["flags"],int.from_bytes(msg["seqNum"],"big"),0,b"")
                                         self.con.lastSendFrame = reply
-                                        self.con.socket.sendto(reply,addr)
+                                        try:
+                                            self.con.socket.sendto(reply,addr)
+                                        except Exception:
+                                            print("Couldnt send reply")
                                     else:
                                         reply = encapsulateData(CONTROL,ACK,int.from_bytes(msg["seqNum"],"big"),0,b"")
                                         self.con.lastSendFrame = reply
-                                        self.con.socket.sendto(reply,addr)
+                                        try:
+                                            self.con.socket.sendto(reply,addr)
+                                        except Exception:
+                                            print("Couldnt send reply")
                                 elif seq == self.con.awaitedWindow:
                                     self.con.awaitedWindow += 1
+                                    self.con.rstTimeAliveClock()
                                     if msg["type"] == CONTROL:
-                                        if ACK+msg["flags"] > 0x30:
-                                            safePrint(msg)
                                         reply = encapsulateData(CONTROL,ACK | msg["flags"],int.from_bytes(msg["seqNum"],"big"),0,b"")
                                         self.con.lastSendFrame = reply
-                                        self.con.socket.sendto(reply,addr)
+                                        try:
+                                            self.con.socket.sendto(reply,addr)
+                                        except Exception:
+                                            print("Couldnt send reply")
                                         if msg["flags"] == SWAP:
                                             self.con.sending = 2;
+                                            #self.con.disableKeepAlive()
+                                            self.con.flushConnection(False)
+                                            self.con.awaitedWindow = 0
                                             safePrint("you can now send files to: {}".format(addr[0]))
                                         elif msg["flags"] == SYN:
                                             self.con.addr = addr
+                                            self.con.changeState(0,True)
+                                            self.con.enableKeepAlive()
                                             safePrint("Connection started with {}".format(addr[0]))
                                         elif msg["flags"] == FIN:
                                             self.con.awaitedWindow = 0
                                             self.con.addr = 0
+                                            self.con.flushConnection()
                                             safePrint("Connection terminated with {}".format(addr[0]))
                                         elif msg["flags"] == KEEP:
                                             safePrint("Connection kept-alive with {}".format(addr[0]))
@@ -130,18 +150,21 @@ class clientListenThread(threading.Thread):
                                     else:
                                         reply = encapsulateData(CONTROL,ACK,int.from_bytes(msg["seqNum"],"big"),0,b"")
                                         self.con.lastSendFrame = reply
-                                        self.con.socket.sendto(reply,addr)
+                                        try:
+                                            self.con.socket.sendto(reply,addr)
+                                        except Exception:
+                                            print("Couldnt send reply")
                                         if msg["type"] == TEXT:
                                             buildText += msg["data"].decode()
-                                            self.con.disableKeepAlive()
+                                            #self.con.disableKeepAlive()
                                             if msg["flags"] == FIN:
-                                                self.con.enableKeepAlive()
+                                                #self.con.enableKeepAlive()
                                                 safePrint(buildText)
                                                 buildText = ""
                                         elif msg["type"] == FILE:
                                             if msg["flags"] & SYN:
                                                 transferInit = seq
-                                                self.con.disableKeepAlive()
+                                                #self.con.disableKeepAlive()
                                                 fileName += msg["data"].decode()
                                                 if(msg["flags"] == SYN|FIN):
                                                     fragsNums = int.from_bytes(msg["fragCount"],"big")
@@ -157,13 +180,13 @@ class clientListenThread(threading.Thread):
                                                     buildFile = b""
                                                     fileName = ""
                                                     poradie = 0
-                                                    self.con.enableKeepAlive()
+                                                    #self.con.enableKeepAlive()
                                                 except Exception:
                                                     safePrint("failed to write")
                                             else:
                                                 poradie += 1
                                                 fragsNums = int.from_bytes(msg["fragCount"],"big")
-                                                print("bol prijaty fragment {}. z {} -- prijaty bez chyby".format(poradie,fragsNums), end="\r")
+                                                print("bol prijaty fragment {}. z {} -- prijaty bez chyby".format(poradie,fragsNums))
                                                 buildFile += msg["data"]
                                                 fragCount+=1
                                         #self.con.socket.sendto(encapsulateData(0x00,ACK+msg["flags"],int.from_bytes(msg["seqNum"],"big"),0,b""),addr)

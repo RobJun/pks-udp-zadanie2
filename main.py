@@ -31,78 +31,87 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
             fragSize = 0
             msg = ""
             if connection.sending != 1:
-                with connection.windowCondtion:
-                    while fragSize == 0:
-                        fragSize = input("zadajte velkost fragemntu <1-X>: ")
-                        try:
-                            fragSize = int(fragSize)
-                        except Exception:
-                            fragSize = 0
-                    while msg == "":
-                        msg = input("zadajte spravu: ")
 
-                    frags,num = fragment(bytes(msg, "ascii"),fragSize)
-                    #flag = ACK if num == 1 else ACK+FRAG
-                    flag = 0x00
+                while fragSize == 0:
+                    fragSize = input("zadajte velkost fragemntu <1-X>: ")
+                    try:
+                        fragSize = int(fragSize)
+                    except Exception:
+                        fragSize = 0
+                while msg == "":
+                    msg = input("zadajte spravu: ")
+                frags,num = fragment(bytes(msg, "ascii"),fragSize)
+                #flag = ACK if num == 1 else ACK+FRAG
+                flag = 0x00
+                with connection.windowCondtion:
                     connection.sending = 2
-                    connection.fragCount = num;
-                    if not connection.getConnected():
-                        connection.send(CONTROL,SYN,None,0,b"")
+                connection.fragCount = num;
+                if not connection.getConnected():
+                    with connection.windowCondtion:
                         connection.initPacket = True
-                    connection.sendMultiple(TEXT,0x00,0,frags,True)
-                    connection.rstTime()
+                    connection.send(CONTROL,SYN,None,0,b"")
+                connection.sendMultiple(TEXT,0x00,0,frags,True)
+                connection.rstTime()
+                #connection.disableKeepAlive()
+                del frags
             else:
                 print("In listening mode")
             pass
         elif option == "2": #subor
             if connection.sending != 1:
-                with connection.windowCondtion:
-                    fragSize = 0
-                    path = ""
-                    while fragSize == 0:
-                        fragSize = input("zadajte velkost fragemntu <1-X>: ")
-                        try:
-                            fragSize = int(fragSize)
-                        except Exception:
-                            fragSize = 0
-
-                    while path == "":
-                        path = input("zadajte cestu k suború: ")
+                fragSize = 0
+                path = ""
+                while fragSize == 0:
+                    fragSize = input("zadajte velkost fragemntu <1-X>: ")
                     try:
-                        f = open(path,"rb")
-                        data= f.read()
-                        frags,num = fragment(data,fragSize)
-                        fileName = pathlib.Path(path).name
-                        fragName,numName = fragment(fileName.encode("ascii"),fragSize)
-                        print("nazov súboru {} bol fragmentovany na {} kusov".format(path,numName))
-                        print("súbor {} bol fragmentovany na {} kusov".format(path,num))
-                        connection.sending = 2
-                        if not connection.getConnected():
-                            connection.send(CONTROL,SYN,None,0,b"")
-                            connection.initPacket = True
-                        connection.sendMultiple(FILE,SYN,numName,fragName,True)
-                        connection.sendMultiple(FILE,0x00,num,frags)
-                        connection.send(FILE,FIN,None,num,b"")
-                        print("ready to send")
-                        printProgressBar(0,connection.fragCount,"Frag sent","Complete")
-                        connection.rstTime()
+                        fragSize = int(fragSize)
                     except Exception:
-                        print("Invalid File")
+                        fragSize = 0
+                while path == "":
+                    path = input("zadajte cestu k suború: ")
+                try:
+                    f = open(path,"rb")
+                    data= f.read()
+                except Exception:
+                    print("Invalid File")
+                    continue;
+                frags,num = fragment(data,fragSize)
+                fileName = pathlib.Path(path).name
+                fragName,numName = fragment(fileName.encode("ascii"),fragSize)
+                print("nazov súboru {} bol fragmentovany na {} kusov".format(path,numName))
+                print("súbor {} bol fragmentovany na {} kusov".format(path,num))
+                with connection.windowCondtion:
+                    connection.sending = 2
+                if not connection.getConnected():
+                    with connection.windowCondtion:
+                        connection.initPacket = True
+                    connection.send(CONTROL,SYN,None,0,b"")
+                connection.sendMultiple(FILE,SYN,numName,fragName,True)
+                connection.sendMultiple(FILE,0x00,num,frags)
+                connection.send(FILE,FIN,None,num,b"")
+                print("ready to send")
+                printProgressBar(0,connection.fragCount,"Frag sent","Complete")
+                connection.rstTime()
+                #connection.disableKeepAlive()
+                del fragName
+                del frags
+
             else:
                 print("In listening mode")
         elif option == "3":
             if connection.sending != 1:
                 connection.send(CONTROL,SWAP,None,0,b'');
                 connection.rstTime()
+                #connection.disableKeepAlive()
             else:
                 print("In listening mode")
 
 def server(port,host):
     hostname = socket.gethostname()
+    host = socket.gethostbyname(socket.gethostname())
     print("Hostname: ",hostname)
-    print("IP addresa: ", host)
+    print("IP addresa: ", socket.gethostbyname(socket.gethostname()))
     print("port: ",port)
-
     s = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     try:
         s.bind((host,port))
@@ -141,20 +150,35 @@ def client(port, hostIP):
 
 if __name__ == '__main__':
     close = False
-    swap = False
     while not close:
-        port = input("zadajte port servera: ")
+        #port = input("zadajte port servera: ")
         print(" 0 - quit\n 1 - server\n 2 - klient")
         mode = input("Zadajte moznost: ")
         if mode == "0":
             close = True
-        elif mode == "1":
-            #IP = input("zadajte ip servera")
-            #port = input("zadajte port servera")
-            #downloadTo = ("zadajte miesto kam sa budu ukladat subory")
-            swap = server(PORT,IP)
         elif mode == "2":
-            if not swap:
-                pass
-                #port = input("zadajte port servera")
-            swap = client(PORT,IP)
+            IP = input("zadajte ip servera")
+            while True:
+                port ="" 
+                port = input("zadajte port servera: ")
+                while not port.isdigit():
+                    port = input("zadajte port servera: ")
+                port = int(port)
+                if port > 1024 or port <= 65535:
+                    break;
+                print("ERROR: pouzity zly port")
+            #downloadTo = ("zadajte miesto kam sa budu ukladat subory")
+            client(port,IP)
+        elif mode == "1":
+            while True:
+                port ="" 
+                port = input("zadajte port servera: ")
+                while not port.isdigit():
+                    port = input("zadajte port servera: ")
+                port = int(port)
+                if port > 1024 or port <= 65535:
+                    break;
+                print("ERROR: pouzity zly port")
+            server(port,IP)
+        else:
+            print("neplatna moznost")

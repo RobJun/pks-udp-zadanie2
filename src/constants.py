@@ -1,5 +1,9 @@
 
 #TYPES
+from random import randint
+import textwrap
+
+
 CONTROL = 0x00
 TEXT = 0x01
 FILE = 0x02
@@ -12,33 +16,48 @@ RES = 0x08
 KEEP = 0x10
 SWAP = 0x20
 
-MAX_SEQ = 65000
+MAX_SEQ = 65500
 
-def fragment(data : bytearray,fragSize : int) -> list:
+
+def simulateMistake(data : bytes):
+    if randint(0,50) == 0 and len(data)-3 >9:
+        index = randint(9,len(data)-3)
+        nahrada = randint(0,255)
+        while nahrada == data[index]:
+            nahrada = randint(0,255)
+        return data[:index] + int.to_bytes(nahrada,1,"big") + data[index+1:]
+    return data
+
+def fragment(data : bytes,fragSize : int) -> list:
     frags = []
     dataCopy = data[:]
     i = 1
     while len(dataCopy) > fragSize:
-        frags.append(dataCopy[:fragSize])
+        c = dataCopy[:fragSize]
+        frags.append((c,len(c)) )
         dataCopy = dataCopy[fragSize:]
         i+=1
     if len(dataCopy) != 0:
-        frags.append(dataCopy)
-    return (frags,i)
+        f = (fragSize - len(dataCopy))
+        padding = b"\0"*f
+        frags.append((dataCopy + padding,len(dataCopy)))
+    return frags,i
 
-def encapsulateData(typ : int,flags : int, seqNum : int ,ackNum : int,data : bytes):
+def encapsulateData(typ : int,flags : int, seqNum : int ,ackNum : int,data : bytes, lenght : int = 0):
     header = int.to_bytes(typ,1,"big")
     header += int.to_bytes(flags,1,"big")
-    header += int.to_bytes(len(data),2,"big")
+    header += int.to_bytes(lenght,2,"big")
     header += int.to_bytes(seqNum,2,"big")
     header += int.to_bytes(ackNum,3,"big")
-    
-    send = header + data
+    if len(data) != 0:
+        send = header + data
+    else:
+        send = header + data
     return send + int.to_bytes(calculateCRC16(send),2,"big");
 
 
 def parseData(msg : bytes):
-    return {"type" : msg[0], "flags" : msg[1],"size" : msg[2:4], "seqNum" : msg[4:6], "fragCount" : msg[6:9], "crc" : msg[-2:], "data" : msg[9:-2]}
+    return {"type" : msg[0], "flags" : msg[1],"size" : msg[2:4], "seqNum" : msg[4:6], "fragCount" : msg[6:9], "crc" : msg[-2:], "data" : msg[9:9+int.from_bytes(msg[2:4],'big')]}
 
 def calculateCRC16(data : bytes):
     poly = 0x11021
@@ -78,7 +97,7 @@ def checkCRC16(data: bytes):
 
 
 def safePrint(row):
-    print('\n')
+    print()
     print(row)
 
 

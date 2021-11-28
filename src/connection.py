@@ -1,10 +1,9 @@
-from os import remove
 import socket
 import threading
 import time
 import random
 
-from src.constants import MAX_SEQ, checkCRC16, encapsulateData,FIN
+from src.constants import MAX_SEQ, checkCRC16, encapsulateData,FIN, simulateMistake
 
 
 class Connection:
@@ -43,7 +42,10 @@ class Connection:
 
         self.fragCount = 0;
         self.currentFrag = 0;
+
+
         self.simulateMistake = True
+        self.simulate = simulateMistake
 
         self.maxTimeOuts = 7
         self.resendTries = 0
@@ -130,33 +132,37 @@ class Connection:
             return  None
         return None
 
-    def sendMultiple(self,typ : int, flags : int, ackNum : int, fragments, lastisFin : bool = False):
-        count =0
+    def sendMultiple(self,typ : int, flags : int, ackNum : int, fragments : list, lastisFin : bool = False):
+        with self.windowCondtion:
+            self.packetsGroups.append([0,len(fragments)])
+        count = 0
         if not lastisFin:
-            for frag in fragments:
-                msg = self.send(typ,flags,None,ackNum,frag)
+            for frag,size in fragments:
+                msg = self.send(typ,flags,None,ackNum,frag,size)
                 if count == 0:
-                    startMsg = msg
-                count+=1
+                    with self.windowCondtion:
+                        self.packetsGroups[-1].append(msg)
+                count=1
         else:
-            for frag in fragments[:-1]:
-                msg = self.send(typ,flags,None,ackNum,frag)
+            for frag,size in fragments[:-1]:
+                msg = self.send(typ,flags,None,ackNum,frag,size)
                 if count == 0:
-                    startMsg = msg
-                count+=1
-            msg= self.send(typ,flags | FIN,None,ackNum,fragments[-1])
+                    with self.windowCondtion:
+                        self.packetsGroups[-1].append(msg)
+                count=1
+            msg= self.send(typ,flags | FIN,None,ackNum,fragments[-1][0],fragments[-1][1])
             if count == 0:
-                    startMsg = msg
-            count+=1
-        self.packetsGroups.append([0,count,startMsg])
+                with self.windowCondtion:
+                    self.packetsGroups[-1].append(msg)
+            count=1
 
-    def send(self,type : int,flags : int, seqNum : int ,ackNum : int,data : bytes):
+    def send(self,type : int,flags : int, seqNum : int ,ackNum : int,data : bytes, size : int = 0):
         with self.windowCondtion:
             seqNum = self.lastSeq = (self.lastSeq+1) % MAX_SEQ
-            msg = encapsulateData(type,flags,seqNum,ackNum,data)
+            msg = encapsulateData(type,flags,seqNum,ackNum,data,size)
             self.packetsToSend.append((seqNum,msg))
             self.fragCount +=1
-            if len(self.packetsToSend) == 0:
+            if len(self.packetsToSend) == 1:
                 self.rstTime()
             #print(self.packetsToSend)
             return msg
@@ -172,6 +178,7 @@ class Connection:
                     self.tries = 0
                     self.resendTries = 0
                     self.changeState(0,True)
+                    self.enableKeepAlive()
                 
                 removed = self.packetsToSend.pop(0)
                 result = True
@@ -188,27 +195,30 @@ class Connection:
             if timeout and self.keepAlive:
                 self.keepAliveTries +=1
                 if self.keepAliveTries == self.keepAliveMaxTries + 1:
-                    print("kept alive -- no response")
+                    print("keep alive -- no response")
                     self.flushConnection()
                     return resend;
             elif timeout and self.initPacket:
                 self.initTries+=1
                 if self.initTries == self.maxTries + 1:
-                    print("Couldn't connect to server")
+                    print("Couldn't connect")
+                    if self.server:
+                        self.addr = 0
                     self.flushConnection()
                     return resend;
             elif timeout and self.resendTries <= self.maxTimeOuts:
                 self.resendTries+=1
                 if self.resendTries == self.maxTimeOuts + 1:
-                    print("Server not responding")
+                    if self.server:
+                        self.addr = 0
+                    print("other side not responding")
                     self.flushConnection()
                     return resend;
             if len(self.packetsToSend) != 0:
                 for i in range(self.windowSize-1):
                     frame = self.packetsToSend[i][1];
-                    if self.simulateMistake and random.randint(0,50) == 0:
-                        index = random.randint(0,len(frame)-1)
-                        frame = frame[:index] + int.to_bytes(random.randint(0,255),1,"big") + frame[index+1:]
+                    if self.simulateMistake:
+                        frame = self.simulate(frame)
                     self.socket.sendto(frame,self.addr)
                     self.lastSendFrame = frame
                     resend = True
@@ -223,26 +233,33 @@ class Connection:
                 return 
             if self.windowSize != self.maxWindowSize+1 and len(self.packetsToSend) >= self.windowSize:
                 frame = self.packetsToSend[self.windowSize-1][1];
-                if self.simulateMistake and random.randint(0,50) == 0:
-                    index = random.randint(8,len(frame)-1)
-                    frame = frame[:index] + int.to_bytes(random.randint(0,255),1,"big") + frame[index+1:]
+                if self.simulateMistake:
+                    frame = self.simulate(frame)
                 self.socket.sendto(frame,self.addr)
                 self.lastSendFrame = frame
                 self.windowSize +=1
                 sent = True
         return sent;
 
-    def flushConnection(self):
+    def flushConnection(self, swap = True):
         with self.windowCondtion:
                 self.packetsToSend = []
-                self.changeState(0,False)
+                self.packetsGroups = []
+                if swap:
+                    self.changeState(0,False)
                 self.initTries = 0
                 self.resendTries = 0
                 self.keepAliveTries = 0
                 self.lastSeq = -1
                 self.fragCount = 0
                 self.lastSendFrame = None
-                self.disableKeepAlive()
+                if swap:
+                    if self.server:
+                        self.sending = 1
+                    else:
+                         self.sending = 2
+                if swap:
+                    self.disableKeepAlive()
 
     def canSend(self):
         return self.sending == 2
