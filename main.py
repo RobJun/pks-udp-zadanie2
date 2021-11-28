@@ -1,6 +1,7 @@
 import socket
 import sys
 import threading
+import re
 import pathlib
 from src.progressBar import printProgressBar
 
@@ -50,6 +51,7 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
                     with connection.windowCondtion:
                         connection.initPacket = True
                     connection.send(CONTROL,SYN,None,0,b"")
+                    print("sending init frame")
                 connection.sendMultiple(TEXT,0x00,0,frags,True)
                 connection.rstTime()
                 #connection.disableKeepAlive()
@@ -106,11 +108,27 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
             else:
                 print("In listening mode")
 
-def server(port,host):
+def server(port,host,download):
     hostname = socket.gethostname()
-    host = socket.gethostbyname(socket.gethostname())
-    print("Hostname: ",hostname)
-    print("IP addresa: ", socket.gethostbyname(socket.gethostname()))
+    addresses = []
+    i = 1
+    print("choose interface: ")
+    for addr in socket.getaddrinfo(socket.gethostname(),None):
+        if addr[0] == socket.AddressFamily.AF_INET:
+            addresses.append(addr[4][0])
+            print("{} -- {}".format(i,addr[4][0]))
+            i+=1
+    while True:
+        il = input("interface: ")
+        while not il.isdigit():
+            il = input("interface: ")
+        il = int(il)
+        if il >= 1 and il <= len(addresses):
+            host = addresses[il-1];
+            break;
+        print("ERROR: Invalid interface")
+    print("Hostname: ",socket.gethostbyaddr(host)[0])
+    print("IP addresa: ", host)
     print("port: ",port)
     s = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     try:
@@ -122,7 +140,7 @@ def server(port,host):
     connection = Connection(s,True)
     connection.connected = True
     connection.sending = 1;
-    serverListen = clientListenThread(connection)
+    serverListen = clientListenThread(connection,download)
     serverSendThread = clientSendThread(connection)
 
     serverListen.start()
@@ -130,7 +148,7 @@ def server(port,host):
     operations(connection,serverListen,serverSendThread)
 
 
-def client(port, hostIP):  
+def client(port, hostIP,download):  
     s = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
 
     print()
@@ -141,7 +159,7 @@ def client(port, hostIP):
     connection.addr = (hostIP,port)
     connection.sending = 2
     clientSend = clientSendThread(connection)
-    clientListen = clientListenThread(connection)
+    clientListen = clientListenThread(connection,download)
 
     clientListen.start()
     clientSend.start()
@@ -150,6 +168,9 @@ def client(port, hostIP):
 
 if __name__ == '__main__':
     close = False
+    downloadDirectory = input("zadajte cestu kam sa maju subory ukladat: ")
+    if downloadDirectory == "":
+        downloadDirectory =  "./Downloads/"
     while not close:
         #port = input("zadajte port servera: ")
         print(" 0 - quit\n 1 - server\n 2 - klient")
@@ -157,18 +178,21 @@ if __name__ == '__main__':
         if mode == "0":
             close = True
         elif mode == "2":
-            IP = input("zadajte ip servera")
+            IP = input("zadajte ip servera: ")
+            while not re.search(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$",IP):
+                print(" --- Invalid ip address ---")
+                IP = input("zadajte ip servera: ")
             while True:
                 port ="" 
                 port = input("zadajte port servera: ")
                 while not port.isdigit():
                     port = input("zadajte port servera: ")
                 port = int(port)
-                if port > 1024 or port <= 65535:
+                if port > 1024 and port <= 65535:
                     break;
                 print("ERROR: pouzity zly port")
             #downloadTo = ("zadajte miesto kam sa budu ukladat subory")
-            client(port,IP)
+            client(port,IP,downloadDirectory)
         elif mode == "1":
             while True:
                 port ="" 
@@ -176,9 +200,9 @@ if __name__ == '__main__':
                 while not port.isdigit():
                     port = input("zadajte port servera: ")
                 port = int(port)
-                if port > 1024 or port <= 65535:
+                if port > 1024 and port <= 65535:
                     break;
                 print("ERROR: pouzity zly port")
-            server(port,IP)
+            server(port,IP, downloadDirectory)
         else:
             print("neplatna moznost")

@@ -18,7 +18,7 @@ class clientSendThread(threading.Thread):
         while True:
             if self.con.getRunning():
                 if not self.con.server and self.con.keepAlive:
-                    if (self.con.checkKeepAliveTimer(15) or self.con.keepAliveFirstFrame) and self.con.transferDone():
+                    if self.con.checkKeepAliveTimer(15):
                         self.con.send(CONTROL,KEEP,None,0,b'')
                         self.con.rstTime()
                         self.con.rstTimeAliveClock()
@@ -177,12 +177,13 @@ class clientListenThread(threading.Thread):
                                                     f = open(self.downloadDirectory+fileName, "wb")
                                                     f.write(buildFile)
                                                     f.close()
-                                                    buildFile = b""
-                                                    fileName = ""
-                                                    poradie = 0
-                                                    #self.con.enableKeepAlive()
                                                 except Exception:
                                                     safePrint("failed to write")
+                                                buildFile = b""
+                                                fileName = ""
+                                                poradie = 0
+                                                #self.con.enableKeepAlive()
+
                                             else:
                                                 poradie += 1
                                                 fragsNums = int.from_bytes(msg["fragCount"],"big")

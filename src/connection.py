@@ -192,7 +192,7 @@ class Connection:
     def resendWindow(self, timeout):
         resend = False
         with self.windowCondtion:
-            if timeout and self.keepAlive:
+            if timeout and self.keepAlive and not self.server:
                 self.keepAliveTries +=1
                 if self.keepAliveTries == self.keepAliveMaxTries + 1:
                     print("keep alive -- no response")
@@ -236,29 +236,31 @@ class Connection:
                 if self.simulateMistake:
                     frame = self.simulate(frame)
                 self.socket.sendto(frame,self.addr)
+                print("sent frame: ", frame)
                 self.lastSendFrame = frame
                 self.windowSize +=1
                 sent = True
         return sent;
 
-    def flushConnection(self, swap = True):
+    def flushConnection(self, notSwap = True):
         with self.windowCondtion:
                 self.packetsToSend = []
                 self.packetsGroups = []
-                if swap:
+                if notSwap:
                     self.changeState(0,False)
+                    self.windowSize = 1
                 self.initTries = 0
                 self.resendTries = 0
                 self.keepAliveTries = 0
                 self.lastSeq = -1
                 self.fragCount = 0
                 self.lastSendFrame = None
-                if swap:
+                if notSwap:
                     if self.server:
                         self.sending = 1
                     else:
                          self.sending = 2
-                if swap:
+                if notSwap:
                     self.disableKeepAlive()
 
     def canSend(self):
