@@ -1,30 +1,32 @@
 import socket
 import sys
-import threading
+import os
 import re
 import pathlib
 from src.progressBar import printProgressBar
 
 from src.connection import Connection
 from src.threads import clientListenThread, clientSendThread
-from src.constants import ACK, CONTROL, FILE, SYN, TEXT,FIN, SWAP, fragment
+from src.constants import ACK, CONTROL, EMPTY, FILE, SYN, TEXT,FIN, SWAP, fragment
 
-
-PORT = 33821
-IP = "192.168.1.2"
-
-#Z:\5_semester\7_seminar_STU_-_priklady.pdf
 
 def operations(connection : Connection, listenThread : clientListenThread, sendThread : clientSendThread):
     while True:
+        print("0 - ukoncenie klienta\n1 - poslanie textovej spravy\n2 - poslanie suboru")
         option = input()
         if option == "0":
             if connection.transferDone():
-                connection.changeState(1,False)
-                #connection.send(CONTROL,FIN,None,None,b"")
-                connection.socket.close()
-                listenThread.join()
-                sendThread.join()
+                if not connection.server and connection.getConnected():
+                    #connection.send(CONTROL,FIN,0,b"")
+                    connection.changeState(1,False)
+                    connection.socket.close()
+                    listenThread.join()
+                    sendThread.join()
+                else:
+                    connection.changeState(1,False)
+                    connection.socket.close()
+                    listenThread.join()
+                    sendThread.join()
                 return False
             else:
                 print("packets are still transmitting")
@@ -42,17 +44,17 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
                 while msg == "":
                     msg = input("zadajte spravu: ")
                 frags,num = fragment(bytes(msg, "ascii"),fragSize)
-                #flag = ACK if num == 1 else ACK+FRAG
-                flag = 0x00
+                print("Veľkosť správy: {}B ")
                 with connection.windowCondtion:
                     connection.sending = 2
                 connection.fragCount = num;
                 if not connection.getConnected():
                     with connection.windowCondtion:
                         connection.initPacket = True
-                    connection.send(CONTROL,SYN,None,0,b"")
+                    connection.send(CONTROL,SYN,0,b"")
                     print("sending init frame")
-                connection.sendMultiple(TEXT,0x00,0,frags,True)
+                connection.disableKeepAlive()
+                connection.sendMultiple(TEXT,EMPTY,num,frags,True)
                 connection.rstTime()
                 #connection.disableKeepAlive()
                 del frags
@@ -80,21 +82,23 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
                 frags,num = fragment(data,fragSize)
                 fileName = pathlib.Path(path).name
                 fragName,numName = fragment(fileName.encode("ascii"),fragSize)
+                print("umiestnenie súboru: {}".format(os.path.abspath(path)))
                 print("nazov súboru {} bol fragmentovany na {} kusov".format(path,numName))
+                print("veľkosť názvu: {}B".format(len(fileName)))
                 print("súbor {} bol fragmentovany na {} kusov".format(path,num))
+                print("Veľkosť suboru: {}B".format(len(data)))
                 with connection.windowCondtion:
                     connection.sending = 2
                 if not connection.getConnected():
                     with connection.windowCondtion:
                         connection.initPacket = True
-                    connection.send(CONTROL,SYN,None,0,b"")
+                    connection.send(CONTROL,SYN,0,b"")
+                connection.disableKeepAlive()
                 connection.sendMultiple(FILE,SYN,numName,fragName,True)
-                connection.sendMultiple(FILE,0x00,num,frags)
-                connection.send(FILE,FIN,None,num,b"")
-                print("ready to send")
-                printProgressBar(0,connection.fragCount,"Frag sent","Complete")
+                connection.sendMultiple(FILE,EMPTY,num,frags)
+                connection.send(FILE,FIN,num,b"")
+                print("added all frags to queue -- ready to send")
                 connection.rstTime()
-                #connection.disableKeepAlive()
                 del fragName
                 del frags
 
@@ -102,31 +106,13 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
                 print("In listening mode")
         elif option == "3":
             if connection.sending != 1:
-                connection.send(CONTROL,SWAP,None,0,b'');
+                connection.send(CONTROL,SWAP,0,b'');
                 connection.rstTime()
                 #connection.disableKeepAlive()
             else:
                 print("In listening mode")
 
 def server(port,host,download):
-    hostname = socket.gethostname()
-    addresses = []
-    i = 1
-    print("choose interface: ")
-    for addr in socket.getaddrinfo(socket.gethostname(),None):
-        if addr[0] == socket.AddressFamily.AF_INET:
-            addresses.append(addr[4][0])
-            print("{} -- {}".format(i,addr[4][0]))
-            i+=1
-    while True:
-        il = input("interface: ")
-        while not il.isdigit():
-            il = input("interface: ")
-        il = int(il)
-        if il >= 1 and il <= len(addresses):
-            host = addresses[il-1];
-            break;
-        print("ERROR: Invalid interface")
     print("Hostname: ",socket.gethostbyaddr(host)[0])
     print("IP addresa: ", host)
     print("port: ",port)
@@ -169,6 +155,8 @@ def client(port, hostIP,download):
 if __name__ == '__main__':
     close = False
     downloadDirectory = input("zadajte cestu kam sa maju subory ukladat: ")
+    while  downloadDirectory != "" and not os.path.isdir(downloadDirectory):
+        downloadDirectory = input("zadajte cestu kam sa maju subory ukladat: ")
     if downloadDirectory == "":
         downloadDirectory =  "./Downloads/"
     while not close:
@@ -191,9 +179,28 @@ if __name__ == '__main__':
                 if port > 1024 and port <= 65535:
                     break;
                 print("ERROR: pouzity zly port")
-            #downloadTo = ("zadajte miesto kam sa budu ukladat subory")
+            print("------------ CLIENT ---------------")
             client(port,IP,downloadDirectory)
         elif mode == "1":
+            print("---------- SERVER INIT -----------")
+            addresses = []
+            i = 1
+            print("choose interface: ")
+            for addr in socket.getaddrinfo(socket.gethostname(),None):
+                if addr[0] == socket.AddressFamily.AF_INET:
+                    addresses.append(addr[4][0])
+                    print("{} -- {}".format(i,addr[4][0]))
+                    i+=1
+            while True:
+                il = input("interface: ")
+                while not il.isdigit():
+                    il = input("interface: ")
+                il = int(il)
+                if il >= 1 and il <= len(addresses):
+                    host = addresses[il-1];
+                    break;
+                print("ERROR: Invalid interface")
+
             while True:
                 port ="" 
                 port = input("zadajte port servera: ")
@@ -203,6 +210,7 @@ if __name__ == '__main__':
                 if port > 1024 and port <= 65535:
                     break;
                 print("ERROR: pouzity zly port")
-            server(port,IP, downloadDirectory)
+            print("------------ SERVER ---------------")
+            server(port,host, downloadDirectory)
         else:
             print("neplatna moznost")

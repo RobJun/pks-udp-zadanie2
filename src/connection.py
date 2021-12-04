@@ -3,7 +3,7 @@ import threading
 import time
 import random
 
-from src.constants import MAX_SEQ, checkCRC16, encapsulateData,FIN, simulateMistake
+from src.constants import EMPTY, MAX_SEQ, checkCRC16, encapsulateData,FIN, simulateMistake,parseData
 
 
 class Connection:
@@ -18,20 +18,23 @@ class Connection:
         self.maxTries = 3
 
 
-        self.keepAlive = False
+        self.keepAliveAwait = False
+        self.keepAliveAwaitStartTime = 0 #seconds
+        self.keepAliveSend = False
+        self.keepAliveSendStartTime = 0 #seconds
         self.keepAliveFirstFrame = True
         self.keepAliveTries = 0
         self.keepAliveMaxTries = 3
-        self.keepAliveStartTime = 15 #seconds
         self.server = server
-        self.keepAliveTime = 15;
+        self.waitingForKeepAck = False
 
 
         self.connectedCondition = threading.RLock()
         self.runningCondition = threading.RLock()
         self.timeCondition = threading.RLock()
         self.windowCondtion = threading.RLock()      
-        self.keepAliveTimeLock = threading.RLock()
+        self.keepAliveAwaitTimeLock = threading.RLock()
+        self.keepAliveSendTimeLock = threading.RLock()
         
         self.packetsToSend = []
         self.maxWindowSize = 1
@@ -39,9 +42,6 @@ class Connection:
         self.timeoutTime = 5 #seconds
         self.startTime = 0
         self.fsize = 1024
-
-        self.fragCount = 0;
-        self.currentFrag = 0;
 
 
         self.simulateMistake = True
@@ -63,16 +63,24 @@ class Connection:
         self.packeTGroupStart = False
 
 
-    def enableKeepAlive(self):
-        with self.keepAliveTimeLock:
-            self.keepAlive = True
+    def enableKeepAliveAwait(self):
+        with self.keepAliveAwaitTimeLock:
+            self.keepAliveAwait = True
+            self.rstTimeAliveClock(True)
+
+    def enableKeepAliveSend(self):
+        with self.keepAliveSendTimeLock:
+            self.keepAliveSend = True
             self.keepAliveFirstFrame = True
-            self.rstTimeAliveClock()
+            self.rstTimeAliveClock(False)
 
     def disableKeepAlive(self):
-        with self.keepAliveTimeLock:
-            self.keepAlive = False
-            self.keepAliveFirstFrame = True
+        with self.keepAliveAwaitTimeLock:
+            with self.keepAliveSendTimeLock:
+                self.keepAliveAwait = False
+                self.keepAliveSend = False
+                self.keepAliveFirstFrame = True
+                self.waitingForKeepAck = False
 
     def checkTime(self):
         with self.timeCondition:
@@ -83,13 +91,21 @@ class Connection:
         with self.timeCondition:
             self.startTime = time.time()
 
-    def rstTimeAliveClock(self):
-        with self.keepAliveTimeLock:
-            self.keepAliveStartTime = time.time()
+    def rstTimeAliveClock(self, what):
+        if what:
+            with self.keepAliveAwaitTimeLock:
+                self.keepAliveAwaitStartTime = time.time()
+        else:
+            with self.keepAliveSendTimeLock:
+                self.keepAliveSendStartTime = time.time()
     
-    def checkKeepAliveTimer(self,t : int):
-        with self.keepAliveTimeLock:
-            return (time.time() - self.keepAliveStartTime) >= t
+    def checkKeepAliveTimer(self,which : bool,t : int):
+        if which:
+            with self.keepAliveAwaitTimeLock:
+                return (time.time() - self.keepAliveAwaitStartTime) >= t
+        else:
+            with self.keepAliveSendTimeLock:
+                return (time.time() - self.keepAliveSendStartTime) >= t
 
 
     def getConnected(self):
@@ -99,10 +115,6 @@ class Connection:
     def getCurrentWindowSize(self):
         with self.windowCondtion:
             return self.windowSize
-
-    def getCurrentFrags(self):
-        with self.windowCondtion:
-            return self.currentFrag
 
     def transferDone(self):
         with self.windowCondtion:
@@ -132,40 +144,51 @@ class Connection:
             return  None
         return None
 
-    def sendMultiple(self,typ : int, flags : int, ackNum : int, fragments : list, lastisFin : bool = False):
+    def sendMultiple(self,typ : int, flags : int, fragCount : int, fragments : list, lastisFin : bool = False):
         with self.windowCondtion:
             self.packetsGroups.append([0,len(fragments)])
         count = 0
         if not lastisFin:
+            msg = self.send(typ,flags,fragCount,b'',0)
+            i = 0
             for frag,size in fragments:
-                msg = self.send(typ,flags,None,ackNum,frag,size)
+                msg = self.send(typ,flags,i,frag,size)
                 if count == 0:
                     with self.windowCondtion:
                         self.packetsGroups[-1].append(msg)
                 count=1
+                i+=1
         else:
+            msg = self.send(typ,flags,fragCount,b'',0)
+            i = 0
             for frag,size in fragments[:-1]:
-                msg = self.send(typ,flags,None,ackNum,frag,size)
+                msg = self.send(typ,flags,i,frag,size)
                 if count == 0:
                     with self.windowCondtion:
                         self.packetsGroups[-1].append(msg)
                 count=1
-            msg= self.send(typ,flags | FIN,None,ackNum,fragments[-1][0],fragments[-1][1])
+                i+=1
+            msg= self.send(typ,flags | FIN,i,fragments[-1][0],fragments[-1][1])
             if count == 0:
                 with self.windowCondtion:
                     self.packetsGroups[-1].append(msg)
             count=1
 
-    def send(self,type : int,flags : int, seqNum : int ,ackNum : int,data : bytes, size : int = 0):
+    def send(self,type : int,flags : int,fragCount : int,data : bytes, size : int = 0):
         with self.windowCondtion:
             seqNum = self.lastSeq = (self.lastSeq+1) % MAX_SEQ
-            msg = encapsulateData(type,flags,seqNum,ackNum,data,size)
+            msg = encapsulateData(type,flags,seqNum,fragCount,data,size)
             self.packetsToSend.append((seqNum,msg))
-            self.fragCount +=1
             if len(self.packetsToSend) == 1:
                 self.rstTime()
             #print(self.packetsToSend)
             return msg
+
+    def getFlagsOfTop(self):
+        with self.windowCondtion:
+            if len(self.packetsToSend) > 0:
+                return parseData(self.packetsToSend[0][1])["flags"]
+            return EMPTY
     
     def ack(self, seqNum):
         with self.windowCondtion:
@@ -178,12 +201,11 @@ class Connection:
                     self.tries = 0
                     self.resendTries = 0
                     self.changeState(0,True)
-                    self.enableKeepAlive()
+                    #self.enableKeepAlive()
                 
                 removed = self.packetsToSend.pop(0)
                 result = True
                 self.windowSize -= 1
-                self.currentFrag +=1
                 self.startTime = time.time()
                 #print(self.packetsToSend)
                 return result,removed
@@ -192,7 +214,7 @@ class Connection:
     def resendWindow(self, timeout):
         resend = False
         with self.windowCondtion:
-            if timeout and self.keepAlive and not self.server:
+            if timeout and self.keepAliveSend:
                 self.keepAliveTries +=1
                 if self.keepAliveTries == self.keepAliveMaxTries + 1:
                     print("keep alive -- no response")
@@ -236,7 +258,7 @@ class Connection:
                 if self.simulateMistake:
                     frame = self.simulate(frame)
                 self.socket.sendto(frame,self.addr)
-                print("sent frame: ", frame)
+            ##print("sent frame: ", frame)
                 self.lastSendFrame = frame
                 self.windowSize +=1
                 sent = True
@@ -253,15 +275,15 @@ class Connection:
                 self.resendTries = 0
                 self.keepAliveTries = 0
                 self.lastSeq = -1
-                self.fragCount = 0
                 self.lastSendFrame = None
                 if notSwap:
                     if self.server:
                         self.sending = 1
+                        self.addr = 0
+                        self.awaitedWindow = 0
                     else:
                          self.sending = 2
-                if notSwap:
-                    self.disableKeepAlive()
+                self.disableKeepAlive()
 
     def canSend(self):
         return self.sending == 2

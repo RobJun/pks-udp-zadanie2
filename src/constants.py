@@ -15,6 +15,8 @@ ACK = 0x04
 RES = 0x08
 KEEP = 0x10
 SWAP = 0x20
+EMPTY = 0x00
+
 
 MAX_SEQ = 65500
 
@@ -43,12 +45,12 @@ def fragment(data : bytes,fragSize : int) -> list:
         frags.append((dataCopy + padding,len(dataCopy)))
     return frags,i
 
-def encapsulateData(typ : int,flags : int, seqNum : int ,ackNum : int,data : bytes, lenght : int = 0):
+def encapsulateData(typ : int,flags : int, seqNum : int ,fragCount : int,data : bytes, lenght : int = 0):
     header = int.to_bytes(typ,1,"big")
     header += int.to_bytes(flags,1,"big")
     header += int.to_bytes(lenght,2,"big")
     header += int.to_bytes(seqNum,2,"big")
-    header += int.to_bytes(ackNum,3,"big")
+    header += int.to_bytes(fragCount,3,"big")
     if len(data) != 0:
         send = header + data
     else:
