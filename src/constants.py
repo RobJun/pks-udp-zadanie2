@@ -17,17 +17,23 @@ KEEP = 0x10
 SWAP = 0x20
 EMPTY = 0x00
 
-
+HEADER_SIZE = 9
+CRC_SIZE = 2
 MAX_SEQ = 65500
 
-
-def simulateMistake(data : bytes):
-    if randint(0,50) == 0 and len(data)-3 >9:
-        index = randint(9,len(data)-3)
-        nahrada = randint(0,255)
-        while nahrada == data[index]:
+__pocitadloSprav = 0
+def simulateMistake(data : bytes, fragCount):
+    global __pocitadloSprav
+    if len(data) > (HEADER_SIZE+CRC_SIZE):
+        __pocitadloSprav +=1
+        if __pocitadloSprav % 2 == 0:
+            index = randint(HEADER_SIZE,len(data)-3)
             nahrada = randint(0,255)
-        return data[:index] + int.to_bytes(nahrada,1,"big") + data[index+1:]
+            while nahrada == data[index]:
+                nahrada = randint(0,255)
+            data = data[:index] + int.to_bytes(nahrada,1,"big") + data[index+1:]
+        if __pocitadloSprav == fragCount:
+            __pocitadloSprav = 0
     return data
 
 def fragment(data : bytes,fragSize : int) -> list:
@@ -61,6 +67,8 @@ def encapsulateData(typ : int,flags : int, seqNum : int ,fragCount : int,data : 
 def parseData(msg : bytes):
     return {"type" : msg[0], "flags" : msg[1],"size" : msg[2:4], "seqNum" : msg[4:6], "fragCount" : msg[6:9], "crc" : msg[-2:], "data" : msg[9:9+int.from_bytes(msg[2:4],'big')]}
 
+
+#https://mdfs.net/Info/Comp/Comms/CRC16.htm
 def calculateCRC16(data : bytes):
     poly = 0x11021
     crc = 0x0000

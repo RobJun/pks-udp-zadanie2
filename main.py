@@ -10,6 +10,44 @@ from src.threads import clientListenThread, clientSendThread
 from src.constants import ACK, CONTROL, EMPTY, FILE, SYN, TEXT,FIN, SWAP, fragment
 
 
+def simulate():
+    simulate = -1
+    while simulate == -1:
+        simulate = input("chcete simulovat chybu (1 - ano; 0 - nie): ")
+        try:
+            simulate = int(simulate)
+            if simulate == 0:
+                simulate = False
+            elif simulate == 1:
+                simulate = True
+            else:
+                print("bad input")
+                simulate = -1
+        except Exception:
+            print("bad input")
+            simulate = -1
+    return simulate
+
+def setFragSize():
+    fragSize = 0
+    while fragSize == 0:
+        fragSize = input("zadajte velkost fragemntu <1-565>: ")
+        try:
+            fragSize = int(fragSize)
+            if fragSize > 565:
+                print("prekrocene max pre fragemnt nastavujem na 565")
+                fragSize = 565
+            if fragSize < 0:
+                print("velkost musi byt viac ako 0")
+                fragSize = 0
+        except Exception:
+            print("Nezadali ste cislo")
+            fragSize = 0
+
+    return fragSize
+
+
+
 def operations(connection : Connection, listenThread : clientListenThread, sendThread : clientSendThread):
     while True:
         print("0 - ukoncenie klienta\n1 - poslanie textovej spravy\n2 - poslanie suboru")
@@ -31,20 +69,18 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
             else:
                 print("packets are still transmitting")
         elif option == "1": # string
-            fragSize = 0
             msg = ""
             if connection.sending != 1:
 
-                while fragSize == 0:
-                    fragSize = input("zadajte velkost fragemntu <1-X>: ")
-                    try:
-                        fragSize = int(fragSize)
-                    except Exception:
-                        fragSize = 0
+                fragSize = setFragSize()
                 while msg == "":
                     msg = input("zadajte spravu: ")
+
+                connection.simulateMistake = simulate()
+                
                 frags,num = fragment(bytes(msg, "ascii"),fragSize)
-                print("Veľkosť správy: {}B ")
+                print("Veľkosť správy: {}B ".format(len(msg)))
+                print("Rozdelena na: {} fragmentov".format(num))
                 with connection.windowCondtion:
                     connection.sending = 2
                 connection.fragCount = num;
@@ -63,14 +99,8 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
             pass
         elif option == "2": #subor
             if connection.sending != 1:
-                fragSize = 0
                 path = ""
-                while fragSize == 0:
-                    fragSize = input("zadajte velkost fragemntu <1-X>: ")
-                    try:
-                        fragSize = int(fragSize)
-                    except Exception:
-                        fragSize = 0
+                fragSize = setFragSize()
                 while path == "":
                     path = input("zadajte cestu k suború: ")
                 try:
@@ -79,6 +109,9 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
                 except Exception:
                     print("Invalid File")
                     continue;
+
+                connection.simulateMistake = simulate()
+                
                 frags,num = fragment(data,fragSize)
                 fileName = pathlib.Path(path).name
                 fragName,numName = fragment(fileName.encode("ascii"),fragSize)

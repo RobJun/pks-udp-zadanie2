@@ -3,38 +3,39 @@ import threading
 import time
 import random
 
-from src.constants import EMPTY, MAX_SEQ, checkCRC16, encapsulateData,FIN, simulateMistake,parseData
+from src.constants import EMPTY, HEADER_SIZE, MAX_SEQ, checkCRC16, encapsulateData,FIN, simulateMistake,parseData,CRC_SIZE
 
 
 class Connection:
     def __init__(self,socket : socket.socket, server : bool = False):
         self.socket = socket
         self.running = True 
+        self.server = server
         self.addr = 0
         self.connected = False
 
+        #tries for initialization
         self.initPacket = False
         self.initTries = 0
         self.maxTries = 3
 
 
+        #for recieving keep alive
         self.keepAliveAwait = False
         self.keepAliveAwaitStartTime = 0 #seconds
+
+        #for sending keep alive
         self.keepAliveSend = False
         self.keepAliveSendStartTime = 0 #seconds
         self.keepAliveFirstFrame = True
+
+        # retries of keep alive
         self.keepAliveTries = 0
         self.keepAliveMaxTries = 3
-        self.server = server
+
         self.waitingForKeepAck = False
 
-
-        self.connectedCondition = threading.RLock()
-        self.runningCondition = threading.RLock()
-        self.timeCondition = threading.RLock()
         self.windowCondtion = threading.RLock()      
-        self.keepAliveAwaitTimeLock = threading.RLock()
-        self.keepAliveSendTimeLock = threading.RLock()
         
         self.packetsToSend = []
         self.maxWindowSize = 1
@@ -64,52 +65,51 @@ class Connection:
 
 
     def enableKeepAliveAwait(self):
-        with self.keepAliveAwaitTimeLock:
+        with self.windowCondtion:
             self.keepAliveAwait = True
             self.rstTimeAliveClock(True)
 
     def enableKeepAliveSend(self):
-        with self.keepAliveSendTimeLock:
+        with self.windowCondtion:
             self.keepAliveSend = True
             self.keepAliveFirstFrame = True
             self.rstTimeAliveClock(False)
 
     def disableKeepAlive(self):
-        with self.keepAliveAwaitTimeLock:
-            with self.keepAliveSendTimeLock:
-                self.keepAliveAwait = False
-                self.keepAliveSend = False
-                self.keepAliveFirstFrame = True
-                self.waitingForKeepAck = False
+        with self.windowCondtion:
+            self.keepAliveAwait = False
+            self.keepAliveSend = False
+            self.keepAliveFirstFrame = True
+            self.waitingForKeepAck = False
 
     def checkTime(self):
-        with self.timeCondition:
+        with self.windowCondtion:
             t = time.time() - self.startTime
             return t >= self.timeoutTime
 
     def rstTime(self):
-        with self.timeCondition:
+        with self.windowCondtion:
             self.startTime = time.time()
 
     def rstTimeAliveClock(self, what):
         if what:
-            with self.keepAliveAwaitTimeLock:
+            with self.windowCondtion:
                 self.keepAliveAwaitStartTime = time.time()
         else:
-            with self.keepAliveSendTimeLock:
+            with self.windowCondtion:
                 self.keepAliveSendStartTime = time.time()
     
     def checkKeepAliveTimer(self,which : bool,t : int):
         if which:
-            with self.keepAliveAwaitTimeLock:
+            with self.windowCondtion:
                 return (time.time() - self.keepAliveAwaitStartTime) >= t
         else:
-            with self.keepAliveSendTimeLock:
+            with self.windowCondtion:
                 return (time.time() - self.keepAliveSendStartTime) >= t
 
 
     def getConnected(self):
-        with self.connectedCondition:
+        with self.windowCondtion:
             return self.connected
 
     def getCurrentWindowSize(self):
@@ -122,15 +122,15 @@ class Connection:
 
 
     def getRunning(self):
-        with self.runningCondition:
+        with self.windowCondtion:
             return self.running
 
     def changeState(self,typ, val):
         if typ == 0:
-            with self.connectedCondition:
+            with self.windowCondtion:
                 self.connected = val
         elif typ == 1:
-            with self.runningCondition:
+            with self.windowCondtion:
                 self.running = val
 
     def recieve(self):
@@ -150,7 +150,7 @@ class Connection:
         count = 0
         if not lastisFin:
             msg = self.send(typ,flags,fragCount,b'',0)
-            i = 0
+            i = 1
             for frag,size in fragments:
                 msg = self.send(typ,flags,i,frag,size)
                 if count == 0:
@@ -160,7 +160,7 @@ class Connection:
                 i+=1
         else:
             msg = self.send(typ,flags,fragCount,b'',0)
-            i = 0
+            i = 1
             for frag,size in fragments[:-1]:
                 msg = self.send(typ,flags,i,frag,size)
                 if count == 0:
@@ -239,8 +239,8 @@ class Connection:
             if len(self.packetsToSend) != 0:
                 for i in range(self.windowSize-1):
                     frame = self.packetsToSend[i][1];
-                    if self.simulateMistake:
-                        frame = self.simulate(frame)
+                    #if self.simulateMistake:
+                    #   frame = self.simulate(frame)
                     self.socket.sendto(frame,self.addr)
                     self.lastSendFrame = frame
                     resend = True
@@ -256,7 +256,9 @@ class Connection:
             if self.windowSize != self.maxWindowSize+1 and len(self.packetsToSend) >= self.windowSize:
                 frame = self.packetsToSend[self.windowSize-1][1];
                 if self.simulateMistake:
-                    frame = self.simulate(frame)
+                    if len(frame) > HEADER_SIZE+CRC_SIZE:
+
+                        frame = self.simulate(frame,self.lengthOfGroup())
                 self.socket.sendto(frame,self.addr)
             ##print("sent frame: ", frame)
                 self.lastSendFrame = frame
