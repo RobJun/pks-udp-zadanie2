@@ -38,7 +38,7 @@ class Connection:
         self.windowCondtion = threading.RLock()      
         
         self.packetsToSend = []
-        self.maxWindowSize = 1
+        self.maxWindowSize = 1 if not server else 5
         self.windowSize = 1
         self.timeoutTime = 5 #seconds
         self.startTime = 0
@@ -257,8 +257,11 @@ class Connection:
                 frame = self.packetsToSend[self.windowSize-1][1];
                 if self.simulateMistake:
                     if len(frame) > HEADER_SIZE+CRC_SIZE:
-
-                        frame = self.simulate(frame,self.lengthOfGroup())
+                        length = 0
+                        for group in self.packetsGroups:
+                            if frame in group:
+                                length = group[1]
+                        frame = self.simulate(frame,length)
                 self.socket.sendto(frame,self.addr)
             ##print("sent frame: ", frame)
                 self.lastSendFrame = frame

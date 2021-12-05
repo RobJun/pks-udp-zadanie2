@@ -130,7 +130,7 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
                 connection.sendMultiple(FILE,SYN,numName,fragName,True)
                 connection.sendMultiple(FILE,EMPTY,num,frags)
                 connection.send(FILE,FIN,num,b"")
-                print("added all frags to queue -- ready to send")
+                print("added all frags to queue")
                 connection.rstTime()
                 del fragName
                 del frags
