@@ -19,7 +19,7 @@ EMPTY = 0x00
 
 HEADER_SIZE = 9
 CRC_SIZE = 2
-MAX_SEQ = 65500
+MAX_SEQ = 20
 
 __pocitadloSprav = 0
 def simulateMistake(data : bytes, fragCount):

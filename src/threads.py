@@ -96,7 +96,8 @@ class clientListenThread(threading.Thread):
                             else:
                                 seq = int.from_bytes(msg["seqNum"],"big")
                                 print("bol prijaty ramec {} -- {} ({})".format(msg["flags"],seq,self.con.awaitedWindow))
-                                if seq < self.con.awaitedWindow or ( self.con.awaitedWindow < self.con.maxWindowSize and seq > MAX_SEQ - (self.con.maxWindowSize - self.con.awaitedWindow)):
+                                if ((seq < self.con.awaitedWindow and seq >= self.con.windowSize)
+                                 or ( self.con.awaitedWindow < self.con.maxWindowSize and seq >= MAX_SEQ - (self.con.maxWindowSize - self.con.awaitedWindow))):
                                     if msg["type"] == CONTROL:
                                         reply = encapsulateData(CONTROL,ACK | msg["flags"],int.from_bytes(msg["seqNum"],"big"),0,b"")
                                         self.con.lastSendFrame = reply
