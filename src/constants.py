@@ -1,7 +1,6 @@
 
 #TYPES
 from random import randint
-import textwrap
 
 
 CONTROL = 0x00
@@ -19,37 +18,34 @@ EMPTY = 0x00
 
 HEADER_SIZE = 9
 CRC_SIZE = 2
-MAX_SEQ = 20
+MAX_SEQ = 65535
 
 __pocitadloSprav = 0
 def simulateMistake(data : bytes, fragCount):
     global __pocitadloSprav
     if len(data) > (HEADER_SIZE+CRC_SIZE):
         __pocitadloSprav +=1
-        if __pocitadloSprav % 2 == 0:
+        if __pocitadloSprav == 10 or (fragCount < 10 and __pocitadloSprav == fragCount):
             index = randint(HEADER_SIZE,len(data)-3)
             nahrada = randint(0,255)
             while nahrada == data[index]:
                 nahrada = randint(0,255)
             data = data[:index] + int.to_bytes(nahrada,1,"big") + data[index+1:]
-        if __pocitadloSprav == fragCount:
             __pocitadloSprav = 0
     return data
 
 def fragment(data : bytes,fragSize : int) -> list:
     frags = []
     dataCopy = data[:]
-    i = 1
     while len(dataCopy) > fragSize:
         c = dataCopy[:fragSize]
         frags.append((c,len(c)) )
         dataCopy = dataCopy[fragSize:]
-        i+=1
     if len(dataCopy) != 0:
         f = (fragSize - len(dataCopy))
         padding = b"\0"*f
         frags.append((dataCopy + padding,len(dataCopy)))
-    return frags,i
+    return frags
 
 def encapsulateData(typ : int,flags : int, seqNum : int ,fragCount : int,data : bytes, lenght : int = 0):
     header = int.to_bytes(typ,1,"big")
@@ -83,8 +79,6 @@ def calculateCRC16(data : bytes):
             if (xor):
                 crc = (crc ^ (poly)) & 0xffff
             byteMask >>= 1
-
-
     return crc & 0xffff
 
 def checkCRC16(data: bytes):
@@ -101,8 +95,6 @@ def checkCRC16(data: bytes):
             if (xor):
                 crc = (crc ^ (poly)) & 0xffff
             byteMask >>= 1
-
-
     return (crc & 0xffff == 0)
 
 

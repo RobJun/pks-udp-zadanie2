@@ -1,12 +1,12 @@
+
 import socket
 import sys
 import os
 import re
 import pathlib
-from src.progressBar import printProgressBar
 
 from src.connection import Connection
-from src.threads import clientListenThread, clientSendThread
+from src.threads import listenThread, sendThread
 from src.constants import ACK, CONTROL, EMPTY, FILE, SYN, TEXT,FIN, SWAP, fragment
 
 
@@ -48,14 +48,17 @@ def setFragSize():
 
 
 
-def operations(connection : Connection, listenThread : clientListenThread, sendThread : clientSendThread):
+def operations(connection : Connection, listenThread : listenThread, sendThread : sendThread):
     while True:
-        print("0 - ukoncenie klienta\n1 - poslanie textovej spravy\n2 - poslanie suboru")
+        print("0 - ukoncenie\n1 - poslanie textovej spravy\n2 - poslanie suboru\n3 - vymena")
         option = input()
         if option == "0":
             if connection.transferDone():
-                if not connection.server and connection.getConnected():
-                    #connection.send(CONTROL,FIN,0,b"")
+                if connection.sending != 1 and connection.getConnected() and connection.keepAliveSend == False:
+                    connection.send(CONTROL,FIN,0,b"")
+                    connection.end = True
+                    connection.closeEvent.wait()
+                    connection.closeEvent.clear()
                     connection.changeState(1,False)
                     connection.socket.close()
                     listenThread.join()
@@ -71,26 +74,27 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
         elif option == "1": # string
             msg = ""
             if connection.sending != 1:
-
+                if not connection.transferDone() and not connection.keepAliveSend:
+                    continue;
                 fragSize = setFragSize()
                 while msg == "":
                     msg = input("zadajte spravu: ")
 
                 connection.simulateMistake = simulate()
                 
-                frags,num = fragment(bytes(msg, "ascii"),fragSize)
-                print("Veľkosť správy: {}B ".format(len(msg)))
-                print("Rozdelena na: {} fragmentov".format(num))
+                frags = fragment(bytes(msg, "ascii"),fragSize)
+                num = len(frags)
+                print("Veľkosť správy: {}B (bude prenesenych {}B dat)".format(len(msg),fragSize*num))
+                print("Rozdelena na: {} fragmentov ({}B fragment)".format(num,fragSize))
                 with connection.windowCondtion:
                     connection.sending = 2
-                connection.fragCount = num;
                 if not connection.getConnected():
                     with connection.windowCondtion:
                         connection.initPacket = True
                     connection.send(CONTROL,SYN,0,b"")
                     print("sending init frame")
                 connection.disableKeepAlive()
-                connection.sendMultiple(TEXT,EMPTY,num,frags,True)
+                connection.sendMultiple(TEXT,EMPTY,num,frags)
                 connection.rstTime()
                 #connection.disableKeepAlive()
                 del frags
@@ -99,6 +103,8 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
             pass
         elif option == "2": #subor
             if connection.sending != 1:
+                if not connection.transferDone() and not connection.keepAliveSend:
+                    continue;
                 path = ""
                 fragSize = setFragSize()
                 while path == "":
@@ -112,14 +118,16 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
 
                 connection.simulateMistake = simulate()
                 
-                frags,num = fragment(data,fragSize)
+                frags= fragment(data,fragSize)
+                num = len(frags)
                 fileName = pathlib.Path(path).name
-                fragName,numName = fragment(fileName.encode("ascii"),fragSize)
+                fragName = fragment(fileName.encode("ascii"),fragSize)
+                numName = len(fragName)
                 print("umiestnenie súboru: {}".format(os.path.abspath(path)))
-                print("nazov súboru {} bol fragmentovany na {} kusov".format(path,numName))
+                print("nazov súboru {} bol fragmentovany na {} kusov (bude prenesenych {}B dat)".format(path,numName,fragSize*numName))
                 print("veľkosť názvu: {}B".format(len(fileName)))
-                print("súbor {} bol fragmentovany na {} kusov".format(path,num))
-                print("Veľkosť suboru: {}B".format(len(data)))
+                print("súbor {} bol fragmentovany na {} kusov (fragment: {}B)".format(path,num,fragSize))
+                print("Veľkosť suboru: {}B (bude prenesenych: {}B dat)".format(len(data),num*fragSize))
                 with connection.windowCondtion:
                     connection.sending = 2
                 if not connection.getConnected():
@@ -127,9 +135,8 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
                         connection.initPacket = True
                     connection.send(CONTROL,SYN,0,b"")
                 connection.disableKeepAlive()
-                connection.sendMultiple(FILE,SYN,numName,fragName,True)
+                connection.sendMultiple(FILE,SYN,numName,fragName)
                 connection.sendMultiple(FILE,EMPTY,num,frags)
-                connection.send(FILE,FIN,num,b"")
                 print("added all frags to queue")
                 connection.rstTime()
                 del fragName
@@ -138,7 +145,9 @@ def operations(connection : Connection, listenThread : clientListenThread, sendT
             else:
                 print("In listening mode")
         elif option == "3":
-            if connection.sending != 1:
+            if connection.sending != 1 and connection.connected:
+                if not connection.transferDone() and not connection.keepAliveSend:
+                    continue;
                 connection.send(CONTROL,SWAP,0,b'');
                 connection.rstTime()
                 #connection.disableKeepAlive()
@@ -154,17 +163,19 @@ def server(port,host,download):
         s.bind((host,port))
     except Exception:
         print("Couldnt create socket")
-        sys.exit(1)
+        return False;
 
     connection = Connection(s,True)
     connection.connected = True
     connection.sending = 1;
-    serverListen = clientListenThread(connection,download)
-    serverSendThread = clientSendThread(connection)
+    serverListen = listenThread(connection,download)
+    serverSendThread = sendThread(connection)
 
     serverListen.start()
     serverSendThread.start()
     operations(connection,serverListen,serverSendThread)
+
+    return True
 
 
 def client(port, hostIP,download):  
@@ -173,12 +184,17 @@ def client(port, hostIP,download):
     print()
     print("server to connect:",hostIP)
     print("port:",port)
+    try:
+        socket.getaddrinfo(hostIP,port)
+    except Exception:
+        print("Unreachable ip address")
+        return
 
     connection = Connection(s)
     connection.addr = (hostIP,port)
     connection.sending = 2
-    clientSend = clientSendThread(connection)
-    clientListen = clientListenThread(connection,download)
+    clientSend = sendThread(connection)
+    clientListen = listenThread(connection,download)
 
     clientListen.start()
     clientSend.start()
@@ -192,6 +208,8 @@ if __name__ == '__main__':
         downloadDirectory = input("zadajte cestu kam sa maju subory ukladat: ")
     if downloadDirectory == "":
         downloadDirectory =  "./Downloads/"
+    if downloadDirectory[-1] != '/':
+        downloadDirectory+= '/'
     while not close:
         #port = input("zadajte port servera: ")
         print(" 0 - quit\n 1 - server\n 2 - klient")
@@ -200,25 +218,26 @@ if __name__ == '__main__':
             close = True
         elif mode == "2":
             IP = input("zadajte ip servera: ")
-            while not re.search(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$",IP):
+            while not bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$",IP)):
                 print(" --- Invalid ip address ---")
                 IP = input("zadajte ip servera: ")
             while True:
                 port ="" 
-                port = input("zadajte port servera: ")
+                port = input("zadajte port servera <1024-65535>: ")
                 while not port.isdigit():
-                    port = input("zadajte port servera: ")
+                    port = input("zadajte port servera <1024-65535>: ")
                 port = int(port)
-                if port > 1024 and port <= 65535:
+                if port >= 1024 and port <= 65535:
                     break;
                 print("ERROR: pouzity zly port")
             print("------------ CLIENT ---------------")
             client(port,IP,downloadDirectory)
         elif mode == "1":
             print("---------- SERVER INIT -----------")
-            addresses = []
+            addresses = ["127.0.0.1"]
             i = 1
             print("choose interface: ")
+            print("0 -- 127.0.0.1 -- local host")
             for addr in socket.getaddrinfo(socket.gethostname(),None):
                 if addr[0] == socket.AddressFamily.AF_INET:
                     addresses.append(addr[4][0])
@@ -229,21 +248,22 @@ if __name__ == '__main__':
                 while not il.isdigit():
                     il = input("interface: ")
                 il = int(il)
-                if il >= 1 and il <= len(addresses):
-                    host = addresses[il-1];
+                if il >= 0 and il < len(addresses):
+                    host = addresses[il];
                     break;
                 print("ERROR: Invalid interface")
 
             while True:
                 port ="" 
-                port = input("zadajte port servera: ")
+                port = input("zadajte port servera <1024-65535>: ")
                 while not port.isdigit():
-                    port = input("zadajte port servera: ")
+                    port = input("zadajte port servera <1024-65535>: ")
                 port = int(port)
-                if port > 1024 and port <= 65535:
+                if port >= 1024 and port <= 65535:
                     break;
                 print("ERROR: pouzity zly port")
             print("------------ SERVER ---------------")
-            server(port,host, downloadDirectory)
+            if not server(port,host, downloadDirectory):
+                break;
         else:
             print("neplatna moznost")

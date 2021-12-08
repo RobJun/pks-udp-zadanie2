@@ -1,8 +1,6 @@
 import socket
 import threading
 import time
-import random
-
 from src.constants import EMPTY, HEADER_SIZE, MAX_SEQ, checkCRC16, encapsulateData,FIN, simulateMistake,parseData,CRC_SIZE
 
 
@@ -13,6 +11,7 @@ class Connection:
         self.server = server
         self.addr = 0
         self.connected = False
+        self.end = False
 
         #tries for initialization
         self.initPacket = False
@@ -35,7 +34,8 @@ class Connection:
 
         self.waitingForKeepAck = False
 
-        self.windowCondtion = threading.RLock()      
+        self.windowCondtion = threading.RLock()    
+        self.closeEvent = threading.Event()  
         
         self.packetsToSend = []
         self.maxWindowSize = 1 if not server else 5
@@ -48,7 +48,7 @@ class Connection:
         self.simulateMistake = True
         self.simulate = simulateMistake
 
-        self.maxTimeOuts = 7
+        self.maxTimeOuts = 4
         self.resendTries = 0
 
         self.awaitedWindow = 0
@@ -61,6 +61,7 @@ class Connection:
 
 
         self.packetsGroups = []
+        self.numberOfDataFrames = 0
         self.packeTGroupStart = False
 
 
@@ -144,35 +145,20 @@ class Connection:
             return  None
         return None
 
-    def sendMultiple(self,typ : int, flags : int, fragCount : int, fragments : list, lastisFin : bool = False):
+    def sendMultiple(self,typ : int, flags : int, fragCount : int, fragments : list):
         with self.windowCondtion:
             self.packetsGroups.append([0,len(fragments)])
+            self.numberOfDataFrames += len(fragments)
         count = 0
-        if not lastisFin:
-            msg = self.send(typ,flags,fragCount,b'',0)
-            i = 1
-            for frag,size in fragments:
+        msg = self.send(typ,flags,fragCount,b'',0)
+        i = 1
+        for frag,size in fragments:
+            with self.windowCondtion:
                 msg = self.send(typ,flags,i,frag,size)
                 if count == 0:
-                    with self.windowCondtion:
-                        self.packetsGroups[-1].append(msg)
-                count=1
-                i+=1
-        else:
-            msg = self.send(typ,flags,fragCount,b'',0)
-            i = 1
-            for frag,size in fragments[:-1]:
-                msg = self.send(typ,flags,i,frag,size)
-                if count == 0:
-                    with self.windowCondtion:
-                        self.packetsGroups[-1].append(msg)
-                count=1
-                i+=1
-            msg= self.send(typ,flags | FIN,i,fragments[-1][0],fragments[-1][1])
-            if count == 0:
-                with self.windowCondtion:
                     self.packetsGroups[-1].append(msg)
             count=1
+            i+=1
 
     def send(self,type : int,flags : int,fragCount : int,data : bytes, size : int = 0):
         with self.windowCondtion:
@@ -216,7 +202,7 @@ class Connection:
         with self.windowCondtion:
             if timeout and self.keepAliveSend:
                 self.keepAliveTries +=1
-                if self.keepAliveTries == self.keepAliveMaxTries + 1:
+                if self.keepAliveTries == self.keepAliveMaxTries:
                     print("keep alive -- no response")
                     self.flushConnection()
                     return resend;
@@ -230,7 +216,7 @@ class Connection:
                     return resend;
             elif timeout and self.resendTries <= self.maxTimeOuts:
                 self.resendTries+=1
-                if self.resendTries == self.maxTimeOuts + 1:
+                if self.resendTries == self.maxTimeOuts:
                     if self.server:
                         self.addr = 0
                     print("other side not responding")
@@ -241,7 +227,10 @@ class Connection:
                     frame = self.packetsToSend[i][1];
                     #if self.simulateMistake:
                     #   frame = self.simulate(frame)
-                    self.socket.sendto(frame,self.addr)
+                    try:
+                        self.socket.sendto(frame,self.addr)
+                    except IOError:
+                        pass
                     self.lastSendFrame = frame
                     resend = True
         return resend
@@ -256,13 +245,11 @@ class Connection:
             if self.windowSize != self.maxWindowSize+1 and len(self.packetsToSend) >= self.windowSize:
                 frame = self.packetsToSend[self.windowSize-1][1];
                 if self.simulateMistake:
-                    if len(frame) > HEADER_SIZE+CRC_SIZE:
-                        length = 0
-                        for group in self.packetsGroups:
-                            if frame in group:
-                                length = group[1]
-                        frame = self.simulate(frame,length)
-                self.socket.sendto(frame,self.addr)
+                    frame = self.simulate(frame,self.numberOfDataFrames)
+                try:
+                    self.socket.sendto(frame,self.addr)
+                except IOError:
+                    pass
             ##print("sent frame: ", frame)
                 self.lastSendFrame = frame
                 self.windowSize +=1
@@ -289,6 +276,9 @@ class Connection:
                     else:
                          self.sending = 2
                 self.disableKeepAlive()
+                if self.end:
+                    self.closeEvent.set()
+
 
     def canSend(self):
         return self.sending == 2
@@ -302,6 +292,7 @@ class Connection:
         with self.windowCondtion:
             if self.packetsGroups[0][0] == self.packetsGroups[0][1]:
                 self.packeTGroupStart = False
+                self.numberOfDataFrames -= self.packetsGroups[0][1]
                 self.packetsGroups.pop(0)
     def getCountedGroups(self):
         with self.windowCondtion:

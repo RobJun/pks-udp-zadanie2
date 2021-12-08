@@ -2,13 +2,13 @@
 import threading
 import time
 import os
-from src.constants import ACK, CONTROL, FILE, KEEP, RES, TEXT,FIN,SYN,MAX_SEQ,SWAP, encapsulateData, parseData,safePrint
+from src.constants import ACK, CONTROL, CRC_SIZE, FILE, HEADER_SIZE, KEEP, RES, TEXT,FIN,SYN,MAX_SEQ,SWAP, encapsulateData, parseData,safePrint
 
 from src.connection import Connection
 from src.progressBar import printProgressBar
 
 
-class clientSendThread(threading.Thread):
+class sendThread(threading.Thread):
     def __init__(self,connection : Connection):
         threading.Thread.__init__(self)
         self.con = connection
@@ -43,7 +43,7 @@ class clientSendThread(threading.Thread):
                 print("---- SENDING THREAD END ----")
                 break
 
-class clientListenThread(threading.Thread):
+class listenThread(threading.Thread):
     def __init__(self,connection : Connection, downloadDirectory = "./Downloads/"):
         threading.Thread.__init__(self)
         self.con = connection
@@ -60,6 +60,7 @@ class clientListenThread(threading.Thread):
                 recv = self.con.recieve()
                 if recv != None:
                     correct,msg, addr = recv
+                    fragSize = len(msg) - (HEADER_SIZE + CRC_SIZE)
                     msg = parseData(msg)
                     if (msg["flags"] & ACK and correct):
                         if msg["flags"] == ACK | RES:
@@ -75,7 +76,9 @@ class clientListenThread(threading.Thread):
                                     printProgressBar(self.con.getCountedGroups()+1,self.con.lengthOfGroup() , prefix = 'Frag sent:', suffix = 'Complete')
                                     self.con.incrementGroup()
                                     self.con.moveToNextPacketGroup()
-                                if msg["type"] == CONTROL and  msg["flags"] == KEEP | ACK:
+                                if msg["type"] == CONTROL and msg["flags"] == FIN | ACK:
+                                    self.con.closeEvent.set()
+                                elif msg["type"] == CONTROL and  msg["flags"] == KEEP | ACK:
                                     safePrint("<- server keep alive accepted")
                                     self.con.waitingForKeepAck = False;
                                     self.con.rstTime()
@@ -125,7 +128,6 @@ class clientListenThread(threading.Thread):
                                             self.con.sending = 2;
                                             self.con.flushConnection(False)
                                             self.con.awaitedWindow = 0
-                                            print("Client disconnected")
                                             safePrint("you can now send files to: {}".format(addr[0]))
                                         elif msg["flags"] == SYN:
                                             self.con.addr = addr
@@ -133,7 +135,8 @@ class clientListenThread(threading.Thread):
                                             safePrint("Connection started with {}".format(addr[0]))
                                         elif msg["flags"] == FIN:
                                             self.con.awaitedWindow = 0
-                                            self.con.addr = 0
+                                            if self.con.server:
+                                                self.con.addr = 0
                                             self.con.flushConnection()
                                             safePrint("Connection terminated with {}".format(addr[0]))
                                         elif msg["flags"] == KEEP:
@@ -159,12 +162,12 @@ class clientListenThread(threading.Thread):
                                             poradie += 1
                                             lenght = int.from_bytes(msg["size"],"big")
                                             print("bol prijaty fragment {}. z {}  ({}B)-- prijaty bez chyby".format(fragCount,fragCount,lenght))
-                                            if msg["flags"] == FIN:
+                                            if not 0 in buildText:
                                                 text = ""
                                                 for i in buildText:
                                                     text+= i.decode()
-                                                print("Pocet fragmentov: ", fragCount)
-                                                print("Veľkosť: {}B".format(len(text)))
+                                                print("Pocet fragmentov: {} (fragment: {}B)".format(fragCount,fragSize))
+                                                print("Veľkosť: {}B (prenesenych {}B dat)".format(len(text),fragSize*fragCount))
                                                 print("!!Prijata sprava:  ",text)
                                                 buildText = []
                                                 poradie = 0
@@ -182,44 +185,43 @@ class clientListenThread(threading.Thread):
                                                 buildText[fragsNums-1] = msg["data"]
                                                 poradie += 1
                                                 lenght = int.from_bytes(msg["size"],"big")
-                                                print("bol prijaty fragment {}. z {} ({}B) -- prijaty bez chyby ".format(fragsNums,fragCount,lenght))
-                                                if(msg["flags"] == SYN|FIN):
-                                                    print("zahajeneie prenosu: {} ({} fragmentov - {}B)".format(fileName,fragsNums,len(fileName)))
+                                                print("bol prijaty fragment {}. z {} ({}B - [{}B fragment]) -- prijaty bez chyby ".format(fragsNums,fragCount,lenght,fragSize))
+                                                if not 0 in buildText:
+                                                #if(msg["flags"] == SYN|FIN):
                                                     print()
                                                     for i in buildText:
                                                         fileName += i.decode()
+                                                    print("zahajeneie prenosu: {} (nazov: {}B nazov; {} fragmentov (veľkosť fragmentu {}B))".format(fileName,len(fileName),fragCount,fragSize*fragCount))
                                                     fragCount = 0
                                                     buildText = []
-                                            elif msg["flags"] == FIN:
-                                                try:
-                                                    buildFile = b""
-                                                    for i in buildText:
-                                                        buildFile += i
-                                                    print("Subor {} bol prijaty".format(fileName))
-                                                    print("ulozeny v: {}".format(os.path.abspath(self.downloadDirectory+fileName)))
-                                                    print("počet prijatych fragmentov: {}".format(fragCount))
-                                                    print("Velkosť: {}B".format(len(buildFile)))
-                                                    f = open(self.downloadDirectory+fileName, "wb")
-                                                    f.write(buildFile)
-                                                    f.close()
-                                                except Exception:
-                                                    safePrint("failed to write")
-                                                buildText = []
-                                                fileName = ""
-                                                fragCount = 0
-                                                self.con.enableKeepAliveAwait()
-
                                             else:
                                                 fragsNums = int.from_bytes(msg["fragCount"],"big")
                                                 lenght = int.from_bytes(msg["size"],"big")
                                                 if fragCount == 0:
                                                     fragCount = fragsNums
                                                     buildText = [0]*fragCount
-                                                    print("idem prijať {} fragmentov pre data suboru".format(fragsNums))
                                                     continue;
                                                 poradie += 1
-                                                print("bol prijaty fragment {}. z {} ({}B) -- prijaty bez chyby".format(fragsNums,fragCount, lenght ))
+                                                print("bol prijaty fragment {}. z {} ({}B - [{}B fragment]) -- prijaty bez chyby".format(fragsNums,fragCount, lenght,fragSize ))
                                                 buildText[fragsNums-1] = msg["data"]
+                                                if not 0 in buildText:
+                                                    try:
+                                                        buildFile = b""
+                                                        for i in buildText:
+                                                            buildFile += i
+                                                        print("Subor {} bol prijaty".format(fileName))
+                                                        print("ulozeny v: {}".format(os.path.abspath(self.downloadDirectory+fileName)))
+                                                        print("počet prijatych fragmentov: {} (veľkosť fragmentu {}B )".format(fragCount,fragSize))
+                                                        print("Velkosť: {}B ({}B prenesene data)".format(len(buildFile),fragSize*fragCount))
+                                                        f = open(self.downloadDirectory+fileName, "wb")
+                                                        f.write(buildFile)
+                                                        f.close()
+                                                    except Exception:
+                                                        safePrint("failed to write")
+                                                    buildText = []
+                                                    fileName = ""
+                                                    fragCount = 0
+                                                    self.con.enableKeepAliveAwait()
                                     if self.con.awaitedWindow == MAX_SEQ:
                                         self.con.awaitedWindow = 0
 
